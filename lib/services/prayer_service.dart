@@ -3,6 +3,9 @@ import 'package:flutter/widgets.dart' show Locale;
 import 'package:geocoding/geocoding.dart' as geocoding;
 import 'package:geolocator/geolocator.dart';
 
+import 'lang.dart';
+import 'settings_service.dart';
+
 /// Ключи намазов в порядке дня. «sunrise» — не намаз, но показывается в списке.
 enum PrayerKey { fajr, sunrise, dhuhr, asr, maghrib, isha }
 
@@ -59,20 +62,35 @@ class PrayerService {
   static const AppLocation fallbackLocation =
       AppLocation(42.8746, 74.5698, 'Бишкек', isFallback: true);
 
-  /// Расчёт: Всемирная мусульманская лига + ханафитский мазхаб (для КР).
-  static CalculationParameters _params() {
-    final p = CalculationMethodParameters.muslimWorldLeague();
-    p.madhab = Madhab.hanafi;
+  /// Параметры расчёта из настроек; по умолчанию — Всемирная мусульманская
+  /// лига + ханафитский мазхаб (для КР).
+  static CalculationParameters _params(
+      CalcMethod method, AsrMadhab madhab) {
+    final p = switch (method) {
+      CalcMethod.muslimWorldLeague =>
+        CalculationMethodParameters.muslimWorldLeague(),
+      CalcMethod.russia => CalculationMethodParameters.russia(),
+      CalcMethod.ummAlQura => CalculationMethodParameters.ummAlQura(),
+      CalcMethod.egyptian => CalculationMethodParameters.egyptian(),
+      CalcMethod.karachi => CalculationMethodParameters.karachi(),
+      CalcMethod.turkiye => CalculationMethodParameters.turkiye(),
+      CalcMethod.northAmerica =>
+        CalculationMethodParameters.northAmerica(),
+    };
+    p.madhab =
+        madhab == AsrMadhab.hanafi ? Madhab.hanafi : Madhab.shafi;
     p.highLatitudeRule = HighLatitudeRule.twilightAngle;
     return p;
   }
 
-  static DayPrayerTimes timesFor(DateTime day, AppLocation loc) {
+  static DayPrayerTimes timesFor(DateTime day, AppLocation loc,
+      {CalcMethod method = CalcMethod.muslimWorldLeague,
+      AsrMadhab madhab = AsrMadhab.hanafi}) {
     final coordinates = Coordinates(loc.latitude, loc.longitude);
     final pt = PrayerTimes(
       date: DateTime(day.year, day.month, day.day, 12),
       coordinates: coordinates,
-      calculationParameters: _params(),
+      calculationParameters: _params(method, madhab),
       precision: true,
     );
     DateTime local(DateTime utc) {
@@ -110,7 +128,7 @@ class PrayerService {
             const LocationSettings(accuracy: LocationAccuracy.low),
       ).timeout(const Duration(seconds: 15));
 
-      String city = 'Моё место';
+      String city = t('Моё место');
       try {
         final placemarks = await geocoding.Geocoding()
             .placemarkFromCoordinates(pos.latitude, pos.longitude,

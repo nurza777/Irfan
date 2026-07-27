@@ -13,6 +13,13 @@ abstract class AppColors {
   static const Color cream = Color(0xFFF5EFD9);
   static const Color cardGlass = Color(0x66101E18);
   static const Color brick = Color(0xFFD9C9A3);
+
+  // Старая книга (режим «Страница» Корана) — сепия, чернила.
+  static const Color paper = Color(0xFFEFE0BE);
+  static const Color paperDark = Color(0xFFDFC996);
+  static const Color paperEdge = Color(0xFFB2925A);
+  static const Color ink = Color(0xFF3A2A17);
+  static const Color inkSoft = Color(0xFF6E5836);
 }
 
 ThemeData buildIrfanTheme() {

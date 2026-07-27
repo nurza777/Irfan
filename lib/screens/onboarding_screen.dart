@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app_state.dart';
+import '../services/lang.dart';
 import '../widgets/dome_background.dart';
+import '../widgets/glass.dart';
 import 'root_screen.dart';
 
 /// Первый запуск: объясняем, зачем геолокация, и просим разрешение.
@@ -38,50 +40,73 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 40),
-                Image.asset('assets/images/logo.png',
-                    height: 110,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                FadeSlideIn(
+                  offset: const Offset(0, -20),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Image.asset('assets/images/logo.png',
+                        height: 110,
+                        errorBuilder: (_, __, ___) =>
+                            const SizedBox.shrink()),
+                  ),
+                ),
                 const SizedBox(height: 40),
-                Text.rich(
-                  TextSpan(
-                    style: TextStyle(
-                        fontSize: 30,
-                        height: 1.35,
-                        color: Colors.white.withValues(alpha: 0.9)),
-                    children: const [
-                      TextSpan(text: 'Мы используем\n'),
+                FadeSlideIn(
+                  delay: const Duration(milliseconds: 180),
+                  child: GlassCard(
+                    radius: 24,
+                    padding: const EdgeInsets.all(20),
+                    child: Text.rich(
                       TextSpan(
-                          text: 'Службу Геолокации,\n',
-                          style: TextStyle(fontWeight: FontWeight.w700)),
-                      TextSpan(
-                          text:
-                              'чтобы автоматически определить ваш город и рассчитать время намаза.'),
-                    ],
+                        style: TextStyle(
+                            fontSize: 27,
+                            height: 1.35,
+                            color: Colors.white.withValues(alpha: 0.92)),
+                        children: [
+                          TextSpan(text: t('Мы используем\n')),
+                          TextSpan(
+                              text: t('Службу Геолокации,\n'),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700)),
+                          TextSpan(
+                              text: t(
+                                  'чтобы автоматически определить ваш город и рассчитать время намаза.')),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 const Spacer(),
                 Center(
-                  child: OutlinedButton(
-                    onPressed: _busy ? null : _continue,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white, width: 1.5),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 44, vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                  child: FadeSlideIn(
+                    delay: const Duration(milliseconds: 380),
+                    child: PressableScale(
+                      child: OutlinedButton(
+                        onPressed: _busy ? null : _continue,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          backgroundColor:
+                              Colors.black.withValues(alpha: 0.25),
+                          side: const BorderSide(
+                              color: Colors.white, width: 1.5),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 44, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30)),
+                        ),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))
+                            : Text(t('ПРОДОЛЖИТЬ'),
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 2)),
+                      ),
                     ),
-                    child: _busy
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
-                        : const Text('ПРОДОЛЖИТЬ',
-                            style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 2)),
                   ),
                 ),
                 const SizedBox(height: 20),
