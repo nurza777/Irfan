@@ -45,6 +45,8 @@ SHOP_ITEMS = {
 }
 MAX_COINS = 1000
 COINS_PER_PRAYER = 5
+# Потолок за сутки: 5 намазов по 5 коинов + запас на зикры.
+MAX_COINS_PER_DAY = 55
 
 _lock = threading.Lock()
 os.chdir(ROOT)
@@ -151,9 +153,22 @@ def _max_plausible_prayers(rec, now):
     return int(days * 5)
 
 
-def _earned_coins(rec):
-    """Коины, заработанные намазами (зикры сервер не верифицирует)."""
-    return min(MAX_COINS, int(rec.get('prayersRead') or 0) * COINS_PER_PRAYER)
+def _earned_coins(rec, now=None):
+    """Заработанные коины: столько, сколько насчитал клиент, но не больше
+    физически возможного.
+
+    Клиент считает и намазы (5 коинов), и зикры (1 коин за 33 повтора).
+    Считать на сервере только намазы нельзя — приложение показывало бы один
+    баланс, а выкуп срывался бы по другому. Поэтому берём клиентское число,
+    но зажимаем его потолком: за сутки нельзя получить больше, чем 5 намазов
+    (25 коинов) плюс разумный запас на зикры.
+    """
+    now = now or int(time.time() * 1000)
+    reported = int(rec.get('coins') or 0)
+    by_prayers = int(rec.get('prayersRead') or 0) * COINS_PER_PRAYER
+    days = _max_plausible_prayers(rec, now) // 5
+    ceiling = days * MAX_COINS_PER_DAY
+    return max(0, min(MAX_COINS, ceiling, max(reported, by_prayers)))
 
 
 def _upsert_user(data):
@@ -210,7 +225,7 @@ def _upsert_user(data):
             rec['prayersRead'] = cap
             rec['capped'] = True
         rec.setdefault('spent', 0)
-        rec['balance'] = max(0, _earned_coins(rec) - int(rec.get('spent') or 0))
+        rec['balance'] = max(0, _earned_coins(rec, now) - int(rec.get('spent') or 0))
         _save_users(users)
         return dict(rec)
 
@@ -235,7 +250,7 @@ def _redeem(data):
             return 404, {'error': 'no user'}
         if rec.get('blocked'):
             return 403, {'error': 'blocked'}
-        balance = max(0, _earned_coins(rec) - int(rec.get('spent') or 0))
+        balance = max(0, _earned_coins(rec, now) - int(rec.get('spent') or 0))
         if balance < cost:
             return 409, {'error': 'not enough', 'balance': balance}
         rec['spent'] = int(rec.get('spent') or 0) + cost
