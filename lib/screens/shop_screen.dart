@@ -237,14 +237,20 @@ class _ShopCard extends StatelessWidget {
     );
     if (confirm != true) return;
     final r = await state.redeem(item);
-    if (r == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(t('Недостаточно коинов'))));
-      }
+    if (!context.mounted) return;
+    if (r.isOk) {
+      _showCode(context, r.redemption!);
       return;
     }
-    if (context.mounted) _showCode(context, r);
+    // Выкуп теперь подтверждает сервер — причин отказа больше одной.
+    final msg = switch (r.status) {
+      RedeemStatus.notEnough => t('Недостаточно коинов'),
+      RedeemStatus.blocked => t('Аккаунт заблокирован администратором'),
+      RedeemStatus.offline => t('Нет связи с сервером — попробуйте позже'),
+      _ => t('Не удалось обменять коины'),
+    };
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _showCode(BuildContext context, Redemption r) {

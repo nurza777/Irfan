@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/azkar_data.dart';
+import '../services/azkar_remote.dart';
 import '../services/lang.dart';
 import '../services/voice_service.dart';
 import '../theme.dart';
@@ -18,10 +19,26 @@ class AzkarScreen extends StatefulWidget {
 }
 
 class _AzkarScreenState extends State<AzkarScreen> {
-  late final List<AzkarCategory> _cats = buildAzkarCategories();
+  // Встроенный набор показываем сразу (он выверен и работает офлайн),
+  // категории от устаза подгружаются с сервера и добавляются к нему.
+  List<AzkarCategory> _cats = buildAzkarCategories();
   int _cat = 0;
   // Счётчики сессии: ключ 'catIndex:itemIndex'.
   final Map<String, int> _counts = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRemote();
+  }
+
+  Future<void> _loadRemote() async {
+    final extra = await AzkarRemote.fetch();
+    debugPrint('AZKAR remote categories: ${extra.length} '
+        '(${extra.map((c) => c.title).join(", ")})');
+    if (!mounted || extra.isEmpty) return;
+    setState(() => _cats = [...buildAzkarCategories(), ...extra]);
+  }
 
   @override
   void dispose() {

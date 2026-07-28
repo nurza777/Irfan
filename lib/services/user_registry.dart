@@ -33,6 +33,9 @@ class UserRegistry {
               'email': u.email,
               'gender': u.gender.name,
               'age': u.age,
+              // Дата создания аккаунта — база для серверной анти-накрутки
+              // коинов (потолок 5 намазов в сутки с момента регистрации).
+              'createdAt': u.createdAt.millisecondsSinceEpoch,
               if (prayersRead != null) 'prayersRead': prayersRead,
               if (streak != null) 'streak': streak,
               if (coins != null) 'coins': coins,

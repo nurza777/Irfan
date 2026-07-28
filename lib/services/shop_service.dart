@@ -1,8 +1,10 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'api_config.dart';
 
 /// Товар в магазине обмена коинов (1 коин = 1 сом).
 class ShopItem {
@@ -82,29 +84,75 @@ class ShopService {
     }
   }
 
-  /// Списывает стоимость и записывает выкуп. Проверку баланса делает вызывающий.
-  Future<Redemption> redeem(ShopItem item) async {
-    final code = _genCode();
-    await _prefs.setInt(_spentKey, spent + item.cost);
-    final list = redemptions
-      ..insert(
-          0,
-          Redemption(
-              itemId: item.id,
-              title: item.title,
-              cost: item.cost,
-              code: code,
-              date: DateTime.now()));
+  /// Выкупает награду НА СЕРВЕРЕ: он считает баланс и выдаёт код.
+  ///
+  /// Раньше и списание, и код делались на устройстве — то есть коины
+  /// накручивались правкой SharedPreferences, а код можно было придумать.
+  /// Теперь клиент только показывает результат; локальная история нужна лишь
+  /// для экрана «Мои выкупы».
+  Future<RedeemResult> redeem(ShopItem item, String email) async {
+    final Map<String, dynamic> j;
+    final int status;
+    try {
+      final base = await ApiConfig.base();
+      final r = await http
+          .post(
+            Uri.parse('$base/redeem'),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+            body: utf8.encode(jsonEncode({
+              'email': email,
+              'itemId': item.id,
+            })),
+          )
+          .timeout(const Duration(seconds: 8));
+      status = r.statusCode;
+      final decoded = jsonDecode(utf8.decode(r.bodyBytes));
+      j = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (e) {
+      debugPrint('redeem error: $e');
+      return RedeemResult.offline();
+    }
+    if (status == 409) {
+      return RedeemResult.notEnough((j['balance'] as num?)?.toInt() ?? 0);
+    }
+    if (status == 403) return RedeemResult.blocked();
+    if (status != 201) return RedeemResult.error();
+
+    final entry = Redemption(
+      itemId: item.id,
+      title: item.title,
+      cost: (j['cost'] as num?)?.toInt() ?? item.cost,
+      code: j['code'] as String? ?? '',
+      date: DateTime.now(),
+    );
+    // Локальные записи — только для истории на экране магазина.
+    await _prefs.setInt(_spentKey, spent + entry.cost);
+    final list = redemptions..insert(0, entry);
     await _prefs.setString(
         _redemptionsKey, jsonEncode(list.map((r) => r.toJson()).toList()));
-    return list.first;
+    return RedeemResult.ok(entry);
   }
+}
 
-  String _genCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    final rng = Random();
-    final s =
-        List.generate(5, (_) => chars[rng.nextInt(chars.length)]).join();
-    return 'IRF-$s';
-  }
+/// Чем закончилась попытка обмена коинов.
+enum RedeemStatus { ok, notEnough, blocked, offline, error }
+
+class RedeemResult {
+  final RedeemStatus status;
+  final Redemption? redemption;
+
+  /// Баланс по данным сервера (при [RedeemStatus.notEnough] — сколько есть).
+  final int? balance;
+
+  const RedeemResult._(this.status, {this.redemption, this.balance});
+
+  factory RedeemResult.ok(Redemption r) =>
+      RedeemResult._(RedeemStatus.ok, redemption: r);
+  factory RedeemResult.notEnough(int balance) =>
+      RedeemResult._(RedeemStatus.notEnough, balance: balance);
+  factory RedeemResult.blocked() => const RedeemResult._(RedeemStatus.blocked);
+  factory RedeemResult.offline() => const RedeemResult._(RedeemStatus.offline);
+  factory RedeemResult.error() => const RedeemResult._(RedeemStatus.error);
+
+  bool get isOk => status == RedeemStatus.ok;
 }

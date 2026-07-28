@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../app_state.dart';
 import '../services/asmaul_husna.dart';
+import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
@@ -93,6 +94,16 @@ class _RootScreenState extends State<RootScreen> {
           qs.setMode(ReadingMode.page);
           qs.setTranslation(translationById('kuliev'));
           qs.setReciter(reciterById('alafasy'));
+        } else if (screen == 'quran_dl') {
+          // Проверка оффлайн-загрузки: качаем аль-Фатиху и печатаем итог.
+          final qs = AppScope.of(context).quran!;
+          final cache = QuranAudioCache.instance;
+          cache.downloadSurah(qs.reciter, 1).then((ok) async {
+            final done = await cache.isSurahDownloaded(qs.reciter, 1);
+            final size = await cache.totalSize();
+            debugPrint('QURAN_DL result=$ok downloaded=$done '
+                'bytes=$size (${formatBytes(size)})');
+          });
         } else if (screen.startsWith('quran')) {
           final qs = AppScope.of(context).quran!;
           if (screen == 'quran_speak' && reciterArg != null) {

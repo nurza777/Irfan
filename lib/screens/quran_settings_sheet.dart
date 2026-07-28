@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
@@ -158,6 +159,10 @@ class _QuranSettings extends StatelessWidget {
                           active: qs.translation.id == t.id,
                           onTap: () => qs.setTranslation(t),
                         ),
+                      const SizedBox(height: 18),
+                      _label(t('ОФФЛАЙН-АУДИО')),
+                      const SizedBox(height: 8),
+                      const _OfflineAudioCard(),
                     ],
                   );
                 },
@@ -430,6 +435,78 @@ class _ModeCard extends StatelessWidget {
                     color: Colors.white.withValues(alpha: 0.6))),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Сколько занято оффлайн-аудио и кнопка всё удалить.
+class _OfflineAudioCard extends StatefulWidget {
+  const _OfflineAudioCard();
+
+  @override
+  State<_OfflineAudioCard> createState() => _OfflineAudioCardState();
+}
+
+class _OfflineAudioCardState extends State<_OfflineAudioCard> {
+  int _bytes = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    QuranAudioCache.instance.revision.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    QuranAudioCache.instance.revision.removeListener(_refresh);
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final v = await QuranAudioCache.instance.totalSize();
+    if (mounted) setState(() => _bytes = v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.download_done,
+              color: AppColors.goldLight, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(t('Скачанные суры играют без интернета'),
+                    style: const TextStyle(fontSize: 13)),
+                const SizedBox(height: 2),
+                Text('${t('Занято на устройстве')}: ${formatBytes(_bytes)}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.6))),
+              ],
+            ),
+          ),
+          if (_bytes > 0)
+            IconButton(
+              tooltip: t('Удалить всё скачанное аудио'),
+              onPressed: () async {
+                await QuranAudioCache.instance.deleteAll();
+              },
+              icon: const Icon(Icons.delete_outline,
+                  color: Colors.redAccent, size: 20),
+            ),
+        ],
       ),
     );
   }

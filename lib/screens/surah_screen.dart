@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:quran/quran.dart' as quran;
 
 import '../app_state.dart';
+import '../services/quran_audio_cache.dart';
+import '../services/reciters.dart';
 import '../services/quran_service.dart';
 import '../services/tajwid.dart';
 import '../services/lang.dart';
@@ -76,8 +78,16 @@ class _SurahScreenState extends State<SurahScreen> {
     if (!mounted) return;
     final reciter = AppScope.of(context).quran!.reciter;
     setState(() => _playingVerse = verse);
+    // Скачанный файл — приоритетнее стрима: работает без сети и не тратит
+    // трафик. Если аята нет локально, играем с CDN как раньше.
+    final local =
+        await QuranAudioCache.instance.localVerse(reciter, widget.surah, verse);
     await _player.stop();
-    await _player.play(UrlSource(reciter.audioUrl(widget.surah, verse)));
+    if (local != null) {
+      await _player.play(DeviceFileSource(local));
+    } else {
+      await _player.play(UrlSource(reciter.audioUrl(widget.surah, verse)));
+    }
   }
 
   Future<void> _stop() async {
@@ -120,6 +130,7 @@ class _SurahScreenState extends State<SurahScreen> {
               ],
             ),
             actions: [
+              _OfflineButton(reciter: qs.reciter, surah: surah),
               IconButton(
                 tooltip: _playingVerse == null
                     ? t('Слушать суру')
@@ -923,6 +934,124 @@ class _BottomToolButton extends StatelessWidget {
       label: Text(label,
           style: const TextStyle(
               fontSize: 14, fontWeight: FontWeight.w600)),
+    );
+  }
+}
+
+/// Кнопка «скачать суру для оффлайна» в шапке читалки: показывает прогресс
+/// во время загрузки и галочку, когда сура уже на устройстве.
+class _OfflineButton extends StatefulWidget {
+  final QuranReciter reciter;
+  final int surah;
+  const _OfflineButton({required this.reciter, required this.surah});
+
+  @override
+  State<_OfflineButton> createState() => _OfflineButtonState();
+}
+
+class _OfflineButtonState extends State<_OfflineButton> {
+  bool _downloaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    QuranAudioCache.instance.revision.addListener(_refresh);
+  }
+
+  @override
+  void didUpdateWidget(covariant _OfflineButton old) {
+    super.didUpdateWidget(old);
+    // Сменили чтеца или суру — статус другой.
+    if (old.reciter.id != widget.reciter.id || old.surah != widget.surah) {
+      _refresh();
+    }
+  }
+
+  @override
+  void dispose() {
+    QuranAudioCache.instance.revision.removeListener(_refresh);
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final v = await QuranAudioCache.instance
+        .isSurahDownloaded(widget.reciter, widget.surah);
+    if (mounted) setState(() => _downloaded = v);
+  }
+
+  Future<void> _tap(DownloadProgress? progress) async {
+    final cache = QuranAudioCache.instance;
+    if (progress != null) {
+      cache.cancel(widget.reciter, widget.surah);
+      return;
+    }
+    if (_downloaded) {
+      final yes = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.skyBottom,
+          title: Text(t('Удалить загрузку?')),
+          content: Text(t('Аудио суры будет удалено с устройства.')),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(t('Отмена'))),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(t('Удалить'))),
+          ],
+        ),
+      );
+      if (yes == true) {
+        await cache.deleteSurah(widget.reciter, widget.surah);
+      }
+      return;
+    }
+    final ok = await cache.downloadSurah(widget.reciter, widget.surah);
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(t('Загрузка прервана — проверьте интернет'))));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final key = QuranAudioCache.keyOf(widget.reciter, widget.surah);
+    return ValueListenableBuilder<Map<String, DownloadProgress>>(
+      valueListenable: QuranAudioCache.instance.active,
+      builder: (context, activeMap, _) {
+        final p = activeMap[key];
+        return IconButton(
+          tooltip: p != null
+              ? t('Отменить загрузку')
+              : _downloaded
+                  ? t('Удалить загрузку')
+                  : t('Скачать для оффлайна'),
+          onPressed: () => _tap(p),
+          icon: p != null
+              ? SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    value: p.fraction,
+                    strokeWidth: 2.4,
+                    valueColor: const AlwaysStoppedAnimation(
+                        AppColors.goldLight),
+                    backgroundColor: Colors.white24,
+                  ),
+                )
+              : Icon(
+                  _downloaded
+                      ? Icons.download_done
+                      : Icons.download_for_offline_outlined,
+                  color: _downloaded
+                      ? AppColors.accentGreen
+                      : AppColors.goldLight,
+                ),
+        );
+      },
     );
   }
 }

@@ -61,9 +61,13 @@ class AppState extends ChangeNotifier {
   int get coins => (earnedCoins - spentCoins).clamp(0, maxCoins);
 
   /// Выкуп награды. Возвращает запись при успехе, иначе null (мало коинов).
-  Future<Redemption?> redeem(ShopItem item) async {
-    if (shop == null || coins < item.cost) return null;
-    final r = await shop!.redeem(item);
+  /// Обмен коинов. Баланс проверяет и код выдаёт сервер — локальная проверка
+  /// ниже нужна лишь чтобы не ходить в сеть с заведомо пустым балансом.
+  Future<RedeemResult> redeem(ShopItem item) async {
+    final email = auth?.current?.email;
+    if (shop == null || email == null) return RedeemResult.error();
+    if (coins < item.cost) return RedeemResult.notEnough(coins);
+    final r = await shop!.redeem(item, email);
     notifyListeners();
     return r;
   }
