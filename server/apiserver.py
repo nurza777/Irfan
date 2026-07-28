@@ -30,6 +30,9 @@ COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
 ACCESS = os.path.join(ROOT, 'access.json')
+# Каталог версий — СОСЕДНИЙ с api/, а не внутри: всё, что лежит в ROOT,
+# раздаётся по HTTP, и копия users.json стала бы публичной.
+VERSIONS = os.path.join(os.path.dirname(ROOT), 'versions')
 VERIFY = os.path.join(ROOT, 'verifications.json')
 _MAX_COMMENTS = 200
 _MAX_USERS = 10000
@@ -114,7 +117,7 @@ def _keep_backup(path):
     if not os.path.isfile(path) or not path.endswith('.json'):
         return
     try:
-        d = os.path.join(os.path.dirname(path), '_versions')
+        d = VERSIONS
         os.makedirs(d, exist_ok=True)
         base = os.path.basename(path)
         shutil.copy2(path, os.path.join(d, f'{base}.{int(time.time())}'))
@@ -538,6 +541,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _deny(self, code=401):
         self.send_response(code)
         self.end_headers()
+
+    def list_directory(self, path):
+        # Листинги перечисляли все файлы данных и загруженные уроки —
+        # незачем облегчать перебор. Отдаём 403.
+        self.send_error(403, 'Forbidden')
+        return None
 
     def do_GET(self):
         p = self.path.split('?')[0].rstrip('/')
