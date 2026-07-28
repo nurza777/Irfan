@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ирфан — админка</title>
+<!--
+  Веб-панель администратора. Один файл, без сборки и внешних библиотек:
+  отдаётся тем же apiserver.py, поэтому открывается по IP из любого браузера
+  и не упирается в CORS.
+
+  Пароль хранится только в sessionStorage — закрыли вкладку, и он исчез.
+  ВАЖНО: пока нет HTTPS, пароль идёт по сети открытым текстом. Не заходите
+  из публичных сетей до включения сертификата (server/enable-https.sh).
+-->
+<style>
+  :root {
+    --bg: #0b1622; --card: #14212f; --line: #23364a;
+    --ink: #eaf1f8; --muted: #8fa6bd;
+    --gold: #e0c071; --green: #2ea36a; --red: #e0555a; --orange: #e0a355;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--gold); }
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+    background: #1b2a3b; color: var(--ink); padding: 9px 14px;
+  }
+  button:hover { border-color: var(--gold); }
+  button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+  button.danger { background: transparent; border-color: var(--red); color: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select {
+    font: inherit; background: #0d1925; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; width: 100%;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: #0e1b28;
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sp { flex: 1; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button.on { background: var(--gold); border-color: var(--gold); color: #16232f; font-weight: 700; }
+
+  main { padding: 20px; max-width: 1180px; margin: 0 auto; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .kpis { display: flex; gap: 18px; flex-wrap: wrap; }
+  .kpi b { display: block; font-size: 27px; }
+  .kpi span { font-size: 12px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  tr.row:hover { background: #182837; cursor: pointer; }
+
+  .bar { display: flex; align-items: center; gap: 10px; margin: 5px 0; font-size: 13px; }
+  .bar .lbl { width: 108px; color: var(--muted); flex: none; }
+  .bar .track { flex: 1; height: 8px; background: #0d1925; border-radius: 4px; overflow: hidden; }
+  /* span по умолчанию inline — высота игнорируется, полоса не рисуется. */
+  .bar .fill { display: block; height: 100%; background: var(--gold); }
+  .bar .val { width: 86px; text-align: right; flex: none; }
+
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 8px; }
+  .tag.ok { background: rgba(46,163,106,.2); color: var(--green); }
+  .tag.warn { background: rgba(224,163,85,.2); color: var(--orange); }
+  .tag.bad { background: rgba(224,85,90,.2); color: var(--red); }
+
+  dialog {
+    background: var(--card); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 16px; padding: 20px; max-width: 640px; width: calc(100% - 32px);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+
+  #login { max-width: 380px; margin: 12vh auto; }
+  #toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    background: #1b2a3b; border: 1px solid var(--gold); border-radius: 10px;
+    padding: 11px 18px; display: none; z-index: 20; max-width: 90%;
+  }
+  .muted { color: var(--muted); font-size: 13px; }
+  .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<div id="login" class="card" hidden>
+  <h2>Вход в админку «Ирфан»</h2>
+  <p class="muted">Учётная запись администратора сервера.</p>
+  <label>Логин</label>
+  <input id="lg-user" value="admin" autocomplete="username">
+  <label>Пароль</label>
+  <input id="lg-pass" type="password" autocomplete="current-password">
+  <p id="lg-err" class="muted" style="color:var(--red)"></p>
+  <p style="margin-top:14px"><button class="primary" id="lg-go" style="width:100%">Войти</button></p>
+  <p class="muted" style="margin-top:14px">
+    Соединение без HTTPS — пароль идёт открытым текстом. Не заходите
+    из публичных сетей, пока не включён сертификат.
+  </p>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>Ирфан · админка</h1>
+    <nav id="nav"></nav>
+    <div class="sp"></div>
+    <span class="muted" id="who"></span>
+    <button id="reload">Обновить</button>
+    <button id="logout">Выйти</button>
+  </header>
+  <main id="view"></main>
+</div>
+
+<div id="toast"></div>
+<dialog id="dlg"></dialog>
+
+<script>
+'use strict';
+
+// ——— Доступ к API ———————————————————————————————————————————————
+
+const API = location.origin;            // панель отдаётся тем же сервером
+let auth = sessionStorage.getItem('irfan_auth') || '';
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, {
+    ...opts,
+    headers: { 'Authorization': 'Basic ' + auth, ...(opts.headers || {}) },
+  });
+  if (r.status === 401) { logout(); throw new Error('Нет прав'); }
+  return r;
+}
+
+async function getJson(path, fallback) {
+  try {
+    const r = await api(path);
+    if (!r.ok) return fallback;
+    return await r.json();
+  } catch { return fallback; }
+}
+
+async function postJson(path, body) {
+  const r = await api(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.ok ? null : `Сервер ответил ${r.status}`;
+}
+
+async function putJson(path, body) {
+  const r = await api(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body, null, 2),
+  });
+  return r.ok ? null : `Сервер ответил ${r.status}`;
+}
+
+// ——— Мелкие помощники ———————————————————————————————————————————
+
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.style.display = 'none'), 2600);
+}
+
+const fmtDate = (ms) => ms
+  ? new Date(ms).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+  : '—';
+const fmtDateTime = (ms) => ms
+  ? new Date(ms).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+  : '—';
+
+function bar(label, count, total, color) {
+  const pct = total ? Math.round((count / total) * 100) : 0;
+  return `<div class="bar">
+    <span class="lbl">${esc(label)}</span>
+    <span class="track"><span class="fill" style="width:${pct}%;background:${color || 'var(--gold)'}"></span></span>
+    <span class="val">${count} · ${pct}%</span>
+  </div>`;
+}
+
+function dialog(html) {
+  const d = $('#dlg');
+  d.innerHTML = html;
+  d.showModal();
+  return d;
+}
+
+// ——— Состояние ——————————————————————————————————————————————————
+
+const state = { users: [], access: [], codes: [], catalog: [], pending: {} };
+
+async function loadAll() {
+  const [users, access, codes, courses, pc, pn, pa] = await Promise.all([
+    getJson('/users.json', []),
+    getJson('/access.json', []),
+    getJson('/verifications.json', []),
+    getJson('/courses.json', { directions: [] }),
+    getJson('/courses_pending.json', null),
+    getJson('/news_pending.json', null),
+    getJson('/azkar_pending.json', null),
+  ]);
+  state.users = Array.isArray(users) ? users : [];
+  state.access = Array.isArray(access) ? access : [];
+  state.codes = (Array.isArray(codes) ? codes : []).slice().reverse();
+  state.catalog = courses?.directions || [];
+  state.pending = { courses: pc, news: pn, azkar: pa };
+}
+
+const activeGrants = (email) => state.access.filter((g) =>
+  g.email === email && !g.revoked && (g.until == null || g.until > Date.now()));
+
+// ——— Разделы ————————————————————————————————————————————————————
+
+const TABS = [
+  ['stats', 'Статистика', viewStats],
+  ['users', 'Ученики', viewUsers],
+  ['access', 'Доступы', viewAccess],
+  ['codes', 'Коды', viewCodes],
+  ['moderation', 'Модерация', viewModeration],
+];
+let tab = 'stats';
+
+function render() {
+  $('#nav').innerHTML = TABS
+    .map(([id, title]) => `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${title}</button>`)
+    .join('');
+  $('#nav').querySelectorAll('button').forEach((b) =>
+    (b.onclick = () => { tab = b.dataset.tab; render(); }));
+  $('#view').innerHTML = (TABS.find(([id]) => id === tab) || TABS[0])[2]();
+  wire();
+}
+
+// — Статистика
+
+function viewStats() {
+  const u = state.users;
+  const total = u.length;
+  if (!total) return `<div class="card"><p class="muted">Пока никто не зарегистрировался.</p></div>`;
+
+  const men = u.filter((x) => x.gender === 'male').length;
+  const women = u.filter((x) => x.gender === 'female').length;
+  const noGender = total - men - women;
+  const verified = u.filter((x) => x.verified).length;
+  const blocked = u.filter((x) => x.blocked).length;
+  const week = Date.now() - 7 * 864e5;
+  const active = u.filter((x) => (x.lastSeen || 0) > week).length;
+
+  // Возраст считаем только по указавшим — иначе среднее врёт.
+  const withAge = u.filter((x) => (x.age || 0) > 0);
+  const avgAge = withAge.length
+    ? Math.round(withAge.reduce((s, x) => s + x.age, 0) / withAge.length) : 0;
+  const groups = [
+    ['до 18', withAge.filter((x) => x.age < 18).length],
+    ['18–25', withAge.filter((x) => x.age >= 18 && x.age <= 25).length],
+    ['26–35', withAge.filter((x) => x.age >= 26 && x.age <= 35).length],
+    ['36–50', withAge.filter((x) => x.age >= 36 && x.age <= 50).length],
+    ['50+', withAge.filter((x) => x.age > 50).length],
+  ];
+
+  const cities = {};
+  u.forEach((x) => { if (x.city) cities[x.city] = (cities[x.city] || 0) + 1; });
+  const topCities = Object.entries(cities).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  const prayers = u.reduce((s, x) => s + (x.prayersRead || 0), 0);
+  const bestStreak = u.reduce((s, x) => Math.max(s, x.streak || 0), 0);
+
+  return `
+  <div class="card">
+    <h2>Всего учеников</h2>
+    <div class="kpis">
+      <div class="kpi"><b>${total}</b><span>всего</span></div>
+      <div class="kpi"><b>${active}</b><span>активны за неделю</span></div>
+      <div class="kpi"><b>${verified}</b><span>подтвердили телефон</span></div>
+      <div class="kpi"><b>${prayers}</b><span>намазов всего</span></div>
+      <div class="kpi"><b>${bestStreak}</b><span>лучшая серия</span></div>
+      ${blocked ? `<div class="kpi"><b style="color:var(--red)">${blocked}</b><span>заблокировано</span></div>` : ''}
+    </div>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <h2>Мужчины и женщины</h2>
+      ${bar('Мужчины', men, total, '#5aa9e6')}
+      ${bar('Женщины', women, total, '#e668a0')}
+      ${noGender ? bar('Не указан', noGender, total, '#5c7185') : ''}
+    </div>
+    <div class="card">
+      <h2>Возраст</h2>
+      ${withAge.length ? `
+        <div class="kpis" style="margin-bottom:10px">
+          <div class="kpi"><b>${avgAge}</b><span>средний возраст</span></div>
+          <div class="kpi"><b>${withAge.length}</b><span>указали возраст</span></div>
+        </div>
+        ${groups.filter(([, c]) => c).map(([l, c]) => bar(l, c, withAge.length)).join('')}
+      ` : '<p class="muted">Никто не указал возраст.</p>'}
+    </div>
+  </div>
+  ${topCities.length ? `<div class="card"><h2>Города</h2>
+    ${topCities.map(([c, n]) => bar(c, n, total, 'var(--green)')).join('')}</div>` : ''}`;
+}
+
+// — Ученики
+
+function viewUsers() {
+  return `
+  <div class="card">
+    <h2>Ученики (${state.users.length})</h2>
+    <input id="q" placeholder="Поиск по имени, email, телефону или городу">
+    <div id="tbl" style="margin-top:12px"></div>
+  </div>`;
+}
+
+function usersTable(query = '') {
+  const q = query.trim().toLowerCase();
+  const rows = state.users.filter((u) => !q ||
+    [u.name, u.email, u.phone, u.city].some((v) => (v || '').toLowerCase().includes(q)));
+  if (!rows.length) return '<p class="muted">Ничего не найдено.</p>';
+  return `<table><thead><tr>
+      <th>Имя</th><th>Контакты</th><th>Пол / возраст</th>
+      <th>Намазы</th><th>Серия</th><th>Баланс</th><th>Доступы</th><th></th>
+    </tr></thead><tbody>
+    ${rows.map((u) => {
+      const g = activeGrants(u.email).length;
+      return `<tr class="row" data-email="${esc(u.email)}">
+        <td><b>${esc(u.name || '—')}</b>${u.blocked ? ' <span class="tag bad">блок</span>' : ''}</td>
+        <td>${esc(u.email)}<br><span class="muted">${esc(u.phone || 'телефон не указан')}
+          ${u.phone ? (u.verified ? '<span class="tag ok">✓</span>' : '<span class="tag warn">не подтв.</span>') : ''}</span></td>
+        <td>${u.gender === 'male' ? 'муж' : u.gender === 'female' ? 'жен' : '—'} ·
+            ${u.age || '—'}<br><span class="muted">${esc(u.city || '')}</span></td>
+        <td>${u.prayersRead || 0}</td>
+        <td>${u.streak || 0}</td>
+        <td>${u.balance ?? 0}</td>
+        <td>${g ? `<span class="tag ok">${g}</span>` : '<span class="muted">нет</span>'}</td>
+        <td>›</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+
+function openStudent(email) {
+  const u = state.users.find((x) => x.email === email);
+  if (!u) return;
+  const grants = activeGrants(email);
+  const fromPrayers = (u.prayersRead || 0) * 5;
+  const fromZikr = Math.max(0, (u.coins || 0) - fromPrayers);
+
+  dialog(`
+    <h2 style="margin:0 0 4px">${esc(u.name || '—')}</h2>
+    <p class="muted" style="margin:0 0 14px">${esc(u.email)}</p>
+
+    <div class="card" style="margin:0 0 12px">
+      <h2>Анкета</h2>
+      <table>
+        <tr><td class="muted">Телефон</td><td>${esc(u.phone || 'не указан')}
+          ${u.phone ? (u.verified ? '<span class="tag ok">подтверждён</span>' : '<span class="tag warn">не подтверждён</span>') : ''}</td></tr>
+        <tr><td class="muted">Город</td><td>${esc(u.city || 'не указан')}</td></tr>
+        <tr><td class="muted">Пол</td><td>${u.gender === 'male' ? 'мужской' : u.gender === 'female' ? 'женский' : 'не указан'}</td></tr>
+        <tr><td class="muted">Возраст</td><td>${u.age || 'не указан'}</td></tr>
+        <tr><td class="muted">Регистрация</td><td>${fmtDate(u.registeredAt)}</td></tr>
+        <tr><td class="muted">Последний вход</td><td>${fmtDate(u.lastSeen)}</td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="margin:0 0 12px">
+      <h2>Эффективность</h2>
+      <div class="kpis">
+        <div class="kpi"><b>${u.prayersRead || 0}</b><span>намазов</span></div>
+        <div class="kpi"><b>${u.streak || 0}</b><span>дней подряд</span></div>
+        <div class="kpi"><b>${fromZikr}</b><span>коинов за зикры</span></div>
+        <div class="kpi"><b>${u.balance ?? 0}</b><span>баланс</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin:0 0 12px">
+      <h2>Доступ к обучению</h2>
+      ${grants.length ? `<table><tbody>${grants.map((g) => `
+        <tr><td>${g.scope === 'direction' ? '📁' : '▶️'} ${esc(g.key)}</td>
+            <td class="muted">${g.until == null ? 'бессрочно' : 'до ' + fmtDate(g.until)}</td>
+            <td><button class="danger" data-revoke="${esc(g.scope)}|${esc(g.key)}">Закрыть</button></td></tr>`).join('')}
+        </tbody></table>` : '<p class="muted">Доступ пока не выдан.</p>'}
+      <div style="margin-top:12px">
+        <label>Открыть доступ</label>
+        <select id="gr-key">
+          ${state.catalog.map((d) => `
+            <option value="direction|${esc(d.title)}">📁 ${esc(d.title)} — всё направление</option>
+            ${(d.courses || []).map((c) => `<option value="course|${esc(d.title)}/${esc(c.title)}">▶️ ${esc(d.title)} / ${esc(c.title)}</option>`).join('')}
+          `).join('') || '<option value="">Каталог курсов пуст</option>'}
+        </select>
+        <label>Срок</label>
+        <select id="gr-days">
+          <option value="7">7 дней</option>
+          <option value="30" selected>1 месяц</option>
+          <option value="90">3 месяца</option>
+          <option value="180">6 месяцев</option>
+          <option value="365">1 год</option>
+          <option value="0">Бессрочно</option>
+          <option value="custom">Свой срок…</option>
+        </select>
+        <input id="gr-custom" type="number" min="1" placeholder="дней" style="margin-top:8px" hidden>
+        <p><button class="primary" id="gr-go" style="width:100%;margin-top:10px">Выдать доступ</button></p>
+      </div>
+    </div>
+
+    <div class="row-actions">
+      <button id="st-block">${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button>
+      <button class="danger" id="st-del">Удалить из реестра</button>
+      <span class="sp" style="flex:1"></span>
+      <button id="st-close">Закрыть</button>
+    </div>
+  `);
+
+  $('#st-close').onclick = () => $('#dlg').close();
+
+  $('#gr-days').onchange = (e) =>
+    ($('#gr-custom').hidden = e.target.value !== 'custom');
+
+  $('#gr-go').onclick = async () => {
+    const raw = $('#gr-key').value;
+    if (!raw) return toast('Каталог курсов пуст');
+    const [scope, ...rest] = raw.split('|');
+    const sel = $('#gr-days').value;
+    const days = sel === 'custom' ? parseInt($('#gr-custom').value || '0', 10) : parseInt(sel, 10);
+    const err = await postJson('/access/grant',
+      { email, scope, key: rest.join('|'), days: days || 0 });
+    toast(err || 'Доступ выдан');
+    if (!err) { await loadAll(); $('#dlg').close(); render(); }
+  };
+
+  document.querySelectorAll('[data-revoke]').forEach((b) => (b.onclick = async () => {
+    const [scope, ...rest] = b.dataset.revoke.split('|');
+    const err = await postJson('/access/revoke', { email, scope, key: rest.join('|') });
+    toast(err || 'Доступ закрыт');
+    if (!err) { await loadAll(); $('#dlg').close(); render(); }
+  }));
+
+  $('#st-block').onclick = async () => {
+    u.blocked = !u.blocked;
+    const err = await putJson('/users.json', state.users);
+    toast(err || (u.blocked ? 'Доступ заблокирован' : 'Доступ восстановлен'));
+    if (err) await loadAll();
+    $('#dlg').close(); render();
+  };
+
+  $('#st-del').onclick = async () => {
+    if (!confirm(`Удалить «${u.name}» из реестра? Аккаунт на устройстве останется.`)) return;
+    state.users = state.users.filter((x) => x.email !== email);
+    const err = await putJson('/users.json', state.users);
+    toast(err || 'Удалён из реестра');
+    if (err) await loadAll();
+    $('#dlg').close(); render();
+  };
+}
+
+// — Доступы
+
+function viewAccess() {
+  const live = state.access.filter((g) => !g.revoked);
+  if (!live.length) return '<div class="card"><p class="muted">Доступы пока никому не выданы.</p></div>';
+  const nameOf = (e) => (state.users.find((u) => u.email === e) || {}).name || e;
+  return `<div class="card"><h2>Выданные доступы (${live.length})</h2>
+    <table><thead><tr><th>Ученик</th><th>Что открыто</th><th>Срок</th><th>Выдан</th><th></th></tr></thead><tbody>
+    ${live.map((g) => {
+      const expired = g.until != null && g.until <= Date.now();
+      return `<tr>
+        <td>${esc(nameOf(g.email))}<br><span class="muted">${esc(g.email)}</span></td>
+        <td>${g.scope === 'direction' ? '📁' : '▶️'} ${esc(g.key)}</td>
+        <td>${g.until == null ? '<span class="tag ok">бессрочно</span>'
+              : expired ? `<span class="tag bad">истёк ${fmtDate(g.until)}</span>`
+              : 'до ' + fmtDate(g.until)}</td>
+        <td class="muted">${fmtDate(g.grantedAt)}</td>
+        <td><button class="danger" data-rv="${esc(g.email)}|${esc(g.scope)}|${esc(g.key)}">Закрыть</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+// — Коды подтверждения
+
+function viewCodes() {
+  return `<div class="card">
+    <h2>Коды подтверждения телефона</h2>
+    <p class="muted">Автоотправка в WhatsApp не подключена — передайте код ученику сами.
+      Код живёт 10 минут, попыток — 5.</p>
+    ${state.codes.length ? `<table style="margin-top:10px"><thead><tr>
+      <th>Телефон</th><th>Ученик</th><th>Код</th><th>Когда</th><th>Статус</th></tr></thead><tbody>
+      ${state.codes.map((c) => {
+        const expired = (c.expiresAt || 0) < Date.now();
+        const valid = !c.used && !expired;
+        return `<tr>
+          <td><b>${esc(c.phone)}</b></td>
+          <td class="muted">${esc(c.email)}</td>
+          <td style="font-size:20px;letter-spacing:2px">${valid ? esc(c.code) : '••••••'}</td>
+          <td class="muted">${fmtDateTime(c.createdAt)}</td>
+          <td>${c.used ? '<span class="tag ok">использован</span>'
+                : expired ? '<span class="tag">истёк</span>'
+                : '<span class="tag warn">действует</span>'}</td>
+        </tr>`;
+      }).join('')}</tbody></table>` : '<p class="muted">Запросов пока не было.</p>'}
+  </div>`;
+}
+
+// — Модерация
+
+function viewModeration() {
+  const blocks = [
+    ['courses', 'Курсы', state.pending.courses, 'courses.json',
+      (p) => `${(p.directions || []).length} направлен., ` +
+             `${(p.directions || []).reduce((s, d) => s + (d.courses || []).length, 0)} курс(ов)`],
+    ['news', 'Новости', state.pending.news, 'news.json',
+      (p) => `${(p.items || []).length} новост(ей)`],
+    ['azkar', 'Азкары', state.pending.azkar, 'azkar.json',
+      (p) => `${(p.categories || []).length} категор., ` +
+             `${(p.categories || []).reduce((s, c) => s + (c.items || []).length, 0)} зикр(ов)`],
+  ];
+  return blocks.map(([id, title, p, , summary]) => {
+    if (!p) return `<div class="card"><h2>${title}</h2><p class="muted">Заявок нет.</p></div>`;
+    const st = p.status || 'none';
+    const tag = st === 'pending' ? '<span class="tag warn">на модерации</span>'
+      : st === 'approved' ? '<span class="tag ok">одобрено</span>'
+      : st === 'rejected' ? '<span class="tag bad">отклонено</span>' : '';
+    return `<div class="card">
+      <h2>${title} ${tag}</h2>
+      <p class="muted">Автор: ${esc(p.author || '—')} · ${fmtDateTime(Date.parse(p.submittedAt) || 0)}</p>
+      <p>${esc(summary(p))}</p>
+      ${p.reason ? `<p class="muted">Причина отказа: ${esc(p.reason)}</p>` : ''}
+      ${st === 'pending' ? `<div class="row-actions" style="margin-top:10px">
+        <button class="primary" data-approve="${id}">Одобрить и опубликовать</button>
+        <button class="danger" data-reject="${id}">Отклонить</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// Одобрение = публикация в live + пометка заявки. Так же, как в приложении.
+async function approve(kind) {
+  const p = state.pending[kind];
+  const live = { courses: 'courses.json', news: 'news.json', azkar: 'azkar.json' }[kind];
+  const payload = { updated: new Date().toISOString(), author: p.author };
+  if (kind === 'courses') payload.directions = p.directions || [];
+  if (kind === 'news') payload.items = p.items || [];
+  if (kind === 'azkar') payload.categories = p.categories || [];
+
+  let err = await putJson('/' + live, payload);
+  if (!err) {
+    err = await putJson(`/${kind}_pending.json`,
+      { ...p, status: 'approved', reviewedAt: new Date().toISOString() });
+  }
+  toast(err || 'Опубликовано студентам');
+  if (!err) { await loadAll(); render(); }
+}
+
+async function reject(kind) {
+  const reason = prompt('Причина отказа (увидит устаз):', '');
+  if (reason === null) return;
+  const p = state.pending[kind];
+  const err = await putJson('/' + kind + '_pending.json',
+    { ...p, status: 'rejected', reason, reviewedAt: new Date().toISOString() });
+  toast(err || 'Заявка отклонена');
+  if (!err) { await loadAll(); render(); }
+}
+
+// ——— Обработчики после отрисовки ————————————————————————————————
+
+function wire() {
+  const q = $('#q');
+  if (q) {
+    const draw = () => {
+      $('#tbl').innerHTML = usersTable(q.value);
+      $('#tbl').querySelectorAll('tr.row').forEach((tr) =>
+        (tr.onclick = () => openStudent(tr.dataset.email)));
+    };
+    q.oninput = draw;
+    draw();
+  }
+  document.querySelectorAll('[data-rv]').forEach((b) => (b.onclick = async () => {
+    const [email, scope, ...rest] = b.dataset.rv.split('|');
+    const err = await postJson('/access/revoke', { email, scope, key: rest.join('|') });
+    toast(err || 'Доступ закрыт');
+    if (!err) { await loadAll(); render(); }
+  }));
+  document.querySelectorAll('[data-approve]').forEach((b) =>
+    (b.onclick = () => approve(b.dataset.approve)));
+  document.querySelectorAll('[data-reject]').forEach((b) =>
+    (b.onclick = () => reject(b.dataset.reject)));
+}
+
+// ——— Вход и запуск ——————————————————————————————————————————————
+
+function logout() {
+  auth = '';
+  sessionStorage.removeItem('irfan_auth');
+  $('#app').hidden = true;
+  $('#login').hidden = false;
+}
+
+async function start() {
+  $('#login').hidden = true;
+  $('#app').hidden = false;
+  $('#who').textContent = 'admin';
+  await loadAll();
+  render();
+}
+
+$('#lg-go').onclick = async () => {
+  const user = $('#lg-user').value.trim();
+  const pass = $('#lg-pass').value;
+  auth = btoa(unescape(encodeURIComponent(user + ':' + pass)));
+  const r = await fetch(API + '/auth/check',
+    { method: 'POST', headers: { 'Authorization': 'Basic ' + auth } });
+  if (!r.ok) {
+    $('#lg-err').textContent = 'Неверный логин или пароль';
+    auth = '';
+    return;
+  }
+  const { role } = await r.json();
+  if (role !== 'admin') {
+    // Устаз сюда не заходит: панель работает с ПДн и доступами.
+    $('#lg-err').textContent = 'Нужна учётная запись администратора';
+    auth = '';
+    return;
+  }
+  sessionStorage.setItem('irfan_auth', auth);
+  $('#lg-err').textContent = '';
+  start();
+};
+
+$('#lg-pass').onkeydown = (e) => { if (e.key === 'Enter') $('#lg-go').click(); };
+$('#logout').onclick = logout;
+$('#reload').onclick = async () => { await loadAll(); render(); toast('Обновлено'); };
+
+// Уже входили в этой вкладке — проверяем сохранённый пароль.
+(async () => {
+  if (!auth) { $('#login').hidden = false; return; }
+  const r = await fetch(API + '/auth/check',
+    { method: 'POST', headers: { 'Authorization': 'Basic ' + auth } });
+  if (r.ok && (await r.json()).role === 'admin') start();
+  else logout();
+})();
+</script>
+</body>
+</html>

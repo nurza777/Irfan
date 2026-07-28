@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import secrets
+import shutil
 import threading
 import time
 
@@ -37,6 +38,9 @@ _MAX_REDEMPTIONS = 20000
 # Пути с ПДн — GET только для админа.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
                   '/verifications.json')
+# Хеш пароля админа: не ПДн, но и не для публики — брутфорсится офлайн.
+# Достаточно любой роли: приложение устаза читает его до входа админом.
+_AUTHED_GET = ('/admin.json',)
 
 # Что можно писать устазу: только заявки на модерацию и загрузки.
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
@@ -99,6 +103,26 @@ def _put_role_for(path):
     if p in _USTAZ_WRITABLE or p.startswith(_USTAZ_WRITABLE_PREFIX):
         return 'ustaz'      # устазу можно; админу — тоже (он выше по правам)
     return 'admin'          # всё остальное, включая live-файлы, — только админ
+
+
+# Сколько прошлых версий каждого файла держим.
+_BACKUPS = 5
+
+
+def _keep_backup(path):
+    """Сохраняет копию файла перед перезаписью, храня последние [_BACKUPS]."""
+    if not os.path.isfile(path) or not path.endswith('.json'):
+        return
+    try:
+        d = os.path.join(os.path.dirname(path), '_versions')
+        os.makedirs(d, exist_ok=True)
+        base = os.path.basename(path)
+        shutil.copy2(path, os.path.join(d, f'{base}.{int(time.time())}'))
+        old = sorted(f for f in os.listdir(d) if f.startswith(base + '.'))
+        for f in old[:-_BACKUPS]:
+            os.remove(os.path.join(d, f))
+    except OSError as e:
+        print(f'[backup] не удалось сохранить {path}: {e}', flush=True)
 
 
 def _read_json(path, default):
@@ -516,11 +540,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # Реестр аккаунтов и коды выкупа (ПДн) — только админ.
-        if self.path.split('?')[0].rstrip('/') in _PROTECTED_GET:
-            if _role(self.headers) != 'admin':
-                self._deny()
-                return
+        p = self.path.split('?')[0].rstrip('/')
+        # Реестр аккаунтов, доступы и коды (ПДн) — только админ.
+        if p in _PROTECTED_GET and _role(self.headers) != 'admin':
+            self._deny()
+            return
+        if p in _AUTHED_GET and _role(self.headers) is None:
+            self._deny()
+            return
         return super().do_GET()
 
     def do_POST(self):
@@ -549,6 +576,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == '/redeem':
             code, body = _redeem(data)
             self._send_json(code, body)
+            return
+        if p == '/auth/check':
+            role = _role(self.headers)
+            if role is None:
+                self._deny()
+                return
+            self._send_json(200, {'role': role})
             return
         if p == '/verify/request':
             code, body = _request_code(data)
@@ -598,6 +632,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._deny(403)
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Перед перезаписью откладываем предыдущую версию: одобрение
+        # модерации затирает live-файл целиком, и ошибочная публикация
+        # иначе безвозвратно уносит то, что было опубликовано раньше.
+        _keep_backup(path)
         n = int(self.headers.get('Content-Length', 0))
         remaining, chunk = n, 1 << 20
         with open(path, 'wb') as f:
