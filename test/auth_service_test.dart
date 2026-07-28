@@ -17,7 +17,8 @@ void main() {
         email: 'a@b.kg',
         password: 'secret1',
         age: 20,
-        gender: Gender.male);
+        gender: Gender.male,
+        phone: '0555123456');
     expect(err, isNull);
 
     final logout = auth;
@@ -39,7 +40,8 @@ void main() {
         email: 'a@b.kg',
         password: 'secret1',
         age: 20,
-        gender: Gender.male);
+        gender: Gender.male,
+        phone: '0555123456');
 
     final raw = prefs.getString('auth_users')!;
     expect(raw.contains('secret1'), isFalse, reason: 'нет открытого пароля');
@@ -75,5 +77,42 @@ void main() {
     await auth.logout();
     expect(await auth.login(email: 'old@b.kg', password: 'pass12'), isNull);
     expect(await auth.login(email: 'old@b.kg', password: 'nope'), isNotNull);
+  });
+
+
+  test('регистрация требует телефон — по нему приходит код подтверждения',
+      () async {
+    final auth = await AuthService.create();
+    final err = await auth.register(
+        name: 'Тест',
+        email: 'a@b.kg',
+        password: 'secret1',
+        age: 20,
+        gender: Gender.male);
+    expect(err, isNotNull, reason: 'без телефона регистрация не проходит');
+  });
+
+  test('телефон приводится к международному виду', () {
+    // Локальные кыргызские форматы — к +996; мусор отбрасывается.
+    expect(normalizePhone('0555123456'), '+996555123456');
+    expect(normalizePhone('555123456'), '+996555123456');
+    expect(normalizePhone('0555 12 34 56'), '+996555123456');
+    expect(normalizePhone('+996 555 123 456'), '+996555123456');
+    expect(normalizePhone('123'), '');
+    expect(normalizePhone(''), '');
+  });
+
+  test('анкета сохраняется в аккаунте', () async {
+    final auth = await AuthService.create();
+    await auth.register(
+        name: 'Тест',
+        email: 'a@b.kg',
+        password: 'secret1',
+        age: 20,
+        gender: Gender.male,
+        phone: '0700111222',
+        city: 'Ош');
+    expect(auth.current!.phone, '+996700111222');
+    expect(auth.current!.city, 'Ош');
   });
 }

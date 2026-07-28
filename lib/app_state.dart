@@ -253,13 +253,17 @@ class AppState extends ChangeNotifier {
     required String password,
     required int age,
     required Gender? gender,
+    String phone = '',
+    String city = '',
   }) async {
     final err = await auth!.register(
         name: name,
         email: email,
         password: password,
         age: age,
-        gender: gender);
+        gender: gender,
+        phone: phone,
+        city: city);
     // Сообщаем профиль на сервер, чтобы админ видел новый аккаунт (без пароля).
     if (err == null && auth!.current != null) {
       await _reportActivity();

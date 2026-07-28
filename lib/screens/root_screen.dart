@@ -17,6 +17,7 @@ import 'home_page.dart';
 import 'names_screen.dart';
 import 'news_screen.dart';
 import 'azkar_screen.dart';
+import 'courses_page.dart';
 import 'qibla_page.dart';
 import 'ramadan_screen.dart';
 import 'settings_screen.dart';
@@ -94,6 +95,9 @@ class _RootScreenState extends State<RootScreen> {
           qs.setMode(ReadingMode.page);
           qs.setTranslation(translationById('kuliev'));
           qs.setReciter(reciterById('alafasy'));
+        } else if (screen == 'courses') {
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const CoursesPage()));
         } else if (screen == 'quran_dl') {
           // Проверка оффлайн-загрузки: качаем аль-Фатиху и печатаем итог.
           final qs = AppScope.of(context).quran!;

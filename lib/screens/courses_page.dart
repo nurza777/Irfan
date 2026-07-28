@@ -3,6 +3,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import '../services/courses_service.dart';
+import '../services/access_service.dart';
+import '../services/date_fmt.dart';
 import '../services/lang.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
@@ -127,7 +129,9 @@ class _CoursesPageState extends State<CoursesPage> {
                             ),
                             for (final (ci, c) in d.courses.indexed)
                               _CourseCard(
-                                  course: c, index: di + ci),
+                                  course: c,
+                                  direction: d.title,
+                                  index: di + ci),
                           ],
                         ],
                       ),
@@ -162,8 +166,12 @@ class _CoursesPageState extends State<CoursesPage> {
 
 class _CourseCard extends StatefulWidget {
   final RemoteCourse course;
+  final String direction;
   final int index;
-  const _CourseCard({required this.course, required this.index});
+  const _CourseCard(
+      {required this.course,
+      required this.direction,
+      required this.index});
 
   @override
   State<_CourseCard> createState() => _CourseCardState();
@@ -193,6 +201,18 @@ class _CourseCardState extends State<_CourseCard> {
   @override
   Widget build(BuildContext context) {
     final c = widget.course;
+    // Доступы приходят с сервера уже после первого кадра, поэтому карточка
+    // подписана на AccessService — иначе замок бы не появился.
+    return ListenableBuilder(
+      listenable: AccessService.instance,
+      builder: (context, _) => _card(context, c),
+    );
+  }
+
+  Widget _card(BuildContext context, RemoteCourse c) {
+    final access = AccessService.instance;
+    final open = access.canOpenCourse(widget.direction, c.title);
+    final until = open ? access.courseUntil(widget.direction, c.title) : null;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: FadeSlideIn(
@@ -210,17 +230,23 @@ class _CourseCardState extends State<_CourseCard> {
                     color: AppColors.domeGreen.withValues(alpha: 0.5),
                     border: Border.all(color: AppColors.gold, width: 1),
                   ),
-                  child: const Icon(Icons.menu_book,
+                  child: Icon(open ? Icons.menu_book : Icons.lock_outline,
                       color: AppColors.cream, size: 22),
                 ),
                 title: Text(c.title,
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.w600)),
                 subtitle: Text(
-                  '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} ${appLang == Lang.ky ? 'сабак' : 'урок(ов)'}',
+                  !open
+                      ? t('Доступ закрыт — обратитесь к устазу')
+                      : until != null
+                          ? '${t('Доступ до')} ${fmtDateShort(until)}'
+                          : '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} ${appLang == Lang.ky ? 'сабак' : 'урок(ов)'}',
                   style: TextStyle(
                       fontSize: 13,
-                      color: Colors.white.withValues(alpha: 0.65)),
+                      color: open
+                          ? Colors.white.withValues(alpha: 0.65)
+                          : Colors.orangeAccent.withValues(alpha: 0.9)),
                 ),
                 trailing: AnimatedRotation(
                   turns: _open ? 0.5 : 0,
@@ -228,12 +254,17 @@ class _CourseCardState extends State<_CourseCard> {
                   child: const Icon(Icons.keyboard_arrow_down,
                       color: AppColors.gold),
                 ),
-                onTap: () => setState(() => _open = !_open),
+                onTap: open
+                    ? () => setState(() => _open = !_open)
+                    : () => ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text(
+                                t('Доступ к этому курсу пока не открыт')))),
               ),
               AnimatedSize(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeOut,
-                child: !_open
+                child: !_open || !open
                     ? const SizedBox.shrink()
                     : Column(
                         children: [

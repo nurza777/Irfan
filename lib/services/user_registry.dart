@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'access_service.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
 
@@ -33,6 +34,10 @@ class UserRegistry {
               'email': u.email,
               'gender': u.gender.name,
               'age': u.age,
+              // Анкета: телефон нужен для кода подтверждения, город — для
+              // статистики у админа.
+              if (u.phone.isNotEmpty) 'phone': u.phone,
+              if (u.city.isNotEmpty) 'city': u.city,
               // Дата создания аккаунта — база для серверной анти-накрутки
               // коинов (потолок 5 намазов в сутки с момента регистрации).
               'createdAt': u.createdAt.millisecondsSinceEpoch,
@@ -44,6 +49,8 @@ class UserRegistry {
           .timeout(const Duration(seconds: 6));
       if (r.statusCode != 201) return null;
       final j = jsonDecode(utf8.decode(r.bodyBytes)) as Map<String, dynamic>;
+      // Сервер возвращает и выданные доступы к курсам — сразу их применяем.
+      AccessService.instance.update(j['access'] as List?);
       return j['blocked'] == true;
     } catch (e) {
       debugPrint('user registry report error: $e');

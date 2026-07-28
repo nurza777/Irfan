@@ -10,7 +10,10 @@ GET  — всем, кроме путей с ПДн (users.json, redemptions.json
 PUT  — по ролям (см. _put_role_for).
 POST /comments   — чат эфира от студентов (без пароля);
 POST /users      — студент сообщает профиль/активность (без пароля);
-POST /redeem     — обмен коинов на награду: баланс и код выдаёт СЕРВЕР.
+POST /redeem     — обмен коинов на награду: баланс и код выдаёт СЕРВЕР;
+POST /verify/request, /verify/confirm — подтверждение телефона кодом;
+POST /access/grant, /access/revoke (admin) — доступ к направлению/курсу
+                   на срок в днях или бессрочно.
 """
 import base64
 import http.server
@@ -25,12 +28,15 @@ AUTH_FILE = '/etc/irfan/auth.json'
 COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
+ACCESS = os.path.join(ROOT, 'access.json')
+VERIFY = os.path.join(ROOT, 'verifications.json')
 _MAX_COMMENTS = 200
 _MAX_USERS = 10000
 _MAX_REDEMPTIONS = 20000
 
 # Пути с ПДн — GET только для админа.
-_PROTECTED_GET = ('/users.json', '/redemptions.json')
+_PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
+                  '/verifications.json')
 
 # Что можно писать устазу: только заявки на модерацию и загрузки.
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
@@ -47,6 +53,12 @@ MAX_COINS = 1000
 COINS_PER_PRAYER = 5
 # Потолок за сутки: 5 намазов по 5 коинов + запас на зикры.
 MAX_COINS_PER_DAY = 55
+
+# Подтверждение телефона кодом.
+CODE_TTL_MS = 10 * 60 * 1000     # код живёт 10 минут
+CODE_MAX_ATTEMPTS = 5            # неверных попыток на код
+CODE_RESEND_MS = 60 * 1000       # не чаще одного кода в минуту
+_MAX_VERIFY = 5000
 
 _lock = threading.Lock()
 os.chdir(ROOT)
@@ -171,6 +183,184 @@ def _earned_coins(rec, now=None):
     return max(0, min(MAX_COINS, ceiling, max(reported, by_prayers)))
 
 
+def _norm_phone(v):
+    """Телефон к виду +996XXXXXXXXX. Пустая строка, если не похоже на номер."""
+    raw = ''.join(ch for ch in str(v or '') if ch.isdigit() or ch == '+')
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if len(digits) < 9 or len(digits) > 15:
+        return ''
+    if raw.startswith('+'):
+        return '+' + digits
+    # Локальный кыргызский формат: 0555123456 → +996555123456.
+    if digits.startswith('0') and len(digits) == 10:
+        return '+996' + digits[1:]
+    if len(digits) == 9:
+        return '+996' + digits
+    return '+' + digits
+
+
+# ——— Доступ к курсам ———
+
+def _load_access():
+    a = _read_json(ACCESS, [])
+    return a if isinstance(a, list) else []
+
+
+def _access_active(rec, now=None):
+    """Действует ли запись доступа: until=None — бессрочно."""
+    now = now or int(time.time() * 1000)
+    if rec.get('revoked'):
+        return False
+    until = rec.get('until')
+    return until is None or int(until) > now
+
+
+def _access_for(email):
+    """Действующие доступы студента — то, что видит его приложение."""
+    now = int(time.time() * 1000)
+    return [
+        {'scope': r.get('scope'), 'key': r.get('key'), 'until': r.get('until')}
+        for r in _load_access()
+        if r.get('email') == email and _access_active(r, now)
+    ]
+
+
+def _grant_access(data):
+    """Выдаёт доступ. days=None/0 → бессрочно, иначе срок в днях."""
+    email = (data.get('email') or '').strip().lower()[:120]
+    scope = data.get('scope')
+    key = (data.get('key') or '').strip()[:200]
+    if '@' not in email or scope not in ('direction', 'course') or not key:
+        return 400, {'error': 'bad request'}
+    try:
+        days = int(data.get('days') or 0)
+    except (ValueError, TypeError):
+        days = 0
+    now = int(time.time() * 1000)
+    until = None if days <= 0 else now + days * 86400000
+    entry = {'email': email, 'scope': scope, 'key': key, 'until': until,
+             'grantedAt': now, 'days': days or None}
+    with _lock:
+        items = _load_access()
+        # Повторная выдача на тот же курс продлевает, а не плодит записи.
+        for r in items:
+            if (r.get('email') == email and r.get('scope') == scope
+                    and r.get('key') == key):
+                r.update(entry)
+                r.pop('revoked', None)
+                break
+        else:
+            items.append(entry)
+        with open(ACCESS, 'w', encoding='utf-8') as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    return 201, entry
+
+
+def _revoke_access(data):
+    email = (data.get('email') or '').strip().lower()[:120]
+    scope = data.get('scope')
+    key = (data.get('key') or '').strip()[:200]
+    with _lock:
+        items = _load_access()
+        found = False
+        for r in items:
+            if (r.get('email') == email and r.get('scope') == scope
+                    and r.get('key') == key):
+                r['revoked'] = True
+                r['revokedAt'] = int(time.time() * 1000)
+                found = True
+        if not found:
+            return 404, {'error': 'no grant'}
+        with open(ACCESS, 'w', encoding='utf-8') as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    return 200, {'ok': True}
+
+
+# ——— Подтверждение телефона кодом ———
+
+def _load_verify():
+    v = _read_json(VERIFY, [])
+    return v if isinstance(v, list) else []
+
+
+def _save_verify(items):
+    with open(VERIFY, 'w', encoding='utf-8') as f:
+        json.dump(items[-_MAX_VERIFY:], f, ensure_ascii=False, indent=2)
+
+
+def _send_code(phone, code):
+    """Отправка кода студенту.
+
+    Провайдер (WhatsApp Business API / Twilio / SMS-шлюз) не подключён —
+    для этого нужен платный аккаунт. Пока код пишется в лог и виден админу
+    в приложении устаза (GET /verifications.json). Чтобы включить реальную
+    отправку, достаточно заменить тело этой функции: остальной поток —
+    срок жизни, лимит попыток, антиспам — уже работает.
+    """
+    print(f'[verify] код для {phone}: {code}', flush=True)
+    return False   # False = «доставлено не было», админ выдаёт код вручную
+
+
+def _request_code(data):
+    """Создаёт код подтверждения и пытается его отправить."""
+    email = (data.get('email') or '').strip().lower()[:120]
+    phone = _norm_phone(data.get('phone'))
+    if '@' not in email:
+        return 400, {'error': 'bad email'}
+    if not phone:
+        return 400, {'error': 'bad phone'}
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_verify()
+        last = next((x for x in reversed(items)
+                     if x.get('email') == email), None)
+        # Антиспам: не чаще одного кода в минуту на аккаунт.
+        if last and now - int(last.get('createdAt') or 0) < CODE_RESEND_MS:
+            wait = (CODE_RESEND_MS - (now - int(last['createdAt']))) // 1000
+            return 429, {'error': 'too soon', 'retryAfter': wait}
+        code = f'{secrets.randbelow(1000000):06d}'
+        entry = {'email': email, 'phone': phone, 'code': code,
+                 'createdAt': now, 'expiresAt': now + CODE_TTL_MS,
+                 'attempts': 0, 'used': False, 'delivered': False}
+        entry['delivered'] = _send_code(phone, code)
+        items.append(entry)
+        _save_verify(items)
+    # Сам код в ответ НЕ отдаём: иначе подтверждение не значит ничего.
+    return 201, {'sent': True, 'delivered': entry['delivered'],
+                 'expiresAt': entry['expiresAt']}
+
+
+def _confirm_code(data):
+    email = (data.get('email') or '').strip().lower()[:120]
+    code = ''.join(ch for ch in str(data.get('code') or '') if ch.isdigit())
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_verify()
+        entry = next((x for x in reversed(items)
+                      if x.get('email') == email and not x.get('used')), None)
+        if entry is None:
+            return 404, {'error': 'no code'}
+        if now > int(entry.get('expiresAt') or 0):
+            return 410, {'error': 'expired'}
+        if int(entry.get('attempts') or 0) >= CODE_MAX_ATTEMPTS:
+            return 429, {'error': 'too many attempts'}
+        if not secrets.compare_digest(code, str(entry.get('code'))):
+            entry['attempts'] = int(entry.get('attempts') or 0) + 1
+            _save_verify(items)
+            left = CODE_MAX_ATTEMPTS - entry['attempts']
+            return 403, {'error': 'wrong code', 'attemptsLeft': max(0, left)}
+        entry['used'] = True
+        entry['confirmedAt'] = now
+        _save_verify(items)
+        users = _load_users()
+        rec = next((x for x in users if x.get('email') == email), None)
+        if rec is not None:
+            rec['verified'] = True
+            rec['phone'] = entry.get('phone') or rec.get('phone')
+            _save_users(users)
+    return 200, {'verified': True}
+
+
 def _upsert_user(data):
     """Заводит/обновляет запись студента по email (без пароля). Возвращает
     запись (с флагом blocked, который мог поставить админ) или None."""
@@ -184,6 +374,8 @@ def _upsert_user(data):
     except (ValueError, TypeError):
         age = 0
     age = max(0, min(150, age))
+    phone = _norm_phone(data.get('phone'))
+    city = (data.get('city') or '').strip()[:60]
     now = int(time.time() * 1000)
 
     def _stat(v, hi):
@@ -212,6 +404,12 @@ def _upsert_user(data):
         rec['name'] = name
         rec['gender'] = gender
         rec['age'] = age
+        # Анкета: телефон и город приходят при регистрации. Пустым значением
+        # не перетираем — старые сборки их просто не присылают.
+        if phone:
+            rec['phone'] = phone
+        if city:
+            rec['city'] = city
         rec['lastSeen'] = now
         # Активность студента (необязательные поля — для дашборда устаза).
         for key, hi in (('prayersRead', 10**7), ('streak', 100000),
@@ -226,8 +424,12 @@ def _upsert_user(data):
             rec['capped'] = True
         rec.setdefault('spent', 0)
         rec['balance'] = max(0, _earned_coins(rec, now) - int(rec.get('spent') or 0))
+        rec.setdefault('verified', False)
         _save_users(users)
-        return dict(rec)
+        out = dict(rec)
+    # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
+    out['access'] = _access_for(email)
+    return out
 
 
 def _redeem(data):
@@ -346,6 +548,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if p == '/redeem':
             code, body = _redeem(data)
+            self._send_json(code, body)
+            return
+        if p == '/verify/request':
+            code, body = _request_code(data)
+            self._send_json(code, body)
+            return
+        if p == '/verify/confirm':
+            code, body = _confirm_code(data)
+            self._send_json(code, body)
+            return
+        if p == '/access/grant':
+            if _role(self.headers) != 'admin':
+                self._deny()
+                return
+            code, body = _grant_access(data)
+            self._send_json(code, body)
+            return
+        if p == '/access/revoke':
+            if _role(self.headers) != 'admin':
+                self._deny()
+                return
+            code, body = _revoke_access(data)
             self._send_json(code, body)
             return
         if p == '/redeem/use':

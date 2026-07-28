@@ -16,6 +16,20 @@ enum Gender {
   const Gender(this.titleRu);
 }
 
+/// Приводит номер к виду +996XXXXXXXXX. Пустая строка — номер не распознан.
+/// Логика повторяет серверную, чтобы приложение и реестр совпадали.
+String normalizePhone(String v) {
+  final raw = v.replaceAll(RegExp(r'[^0-9+]'), '');
+  final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+  if (digits.length < 9 || digits.length > 15) return '';
+  if (raw.startsWith('+')) return '+$digits';
+  if (digits.startsWith('0') && digits.length == 10) {
+    return '+996${digits.substring(1)}';
+  }
+  if (digits.length == 9) return '+996$digits';
+  return '+$digits';
+}
+
 /// Локальная учётная запись (хранится на устройстве; бэкенда пока нет).
 class UserAccount {
   final String name;
@@ -24,6 +38,8 @@ class UserAccount {
   final DateTime createdAt;
   final int age;
   final Gender gender;
+  final String phone;
+  final String city;
   const UserAccount({
     required this.name,
     required this.email,
@@ -31,9 +47,16 @@ class UserAccount {
     required this.createdAt,
     required this.age,
     required this.gender,
+    this.phone = '',
+    this.city = '',
   });
 
-  UserAccount copyWith({int? age, Gender? gender, String? passHash}) =>
+  UserAccount copyWith(
+          {int? age,
+          Gender? gender,
+          String? passHash,
+          String? phone,
+          String? city}) =>
       UserAccount(
         name: name,
         email: email,
@@ -41,6 +64,8 @@ class UserAccount {
         createdAt: createdAt,
         age: age ?? this.age,
         gender: gender ?? this.gender,
+        phone: phone ?? this.phone,
+        city: city ?? this.city,
       );
 
   Map<String, dynamic> toJson() => {
@@ -50,6 +75,8 @@ class UserAccount {
         'createdAt': createdAt.toIso8601String(),
         'age': age,
         'gender': gender.name,
+        'phone': phone,
+        'city': city,
       };
 
   factory UserAccount.fromJson(Map<String, dynamic> j) => UserAccount(
@@ -63,6 +90,8 @@ class UserAccount {
         gender: Gender.values.firstWhere(
             (g) => g.name == j['gender'],
             orElse: () => Gender.male),
+        phone: j['phone'] as String? ?? '',
+        city: j['city'] as String? ?? '',
       );
 }
 
@@ -187,6 +216,8 @@ class AuthService {
     required String password,
     required int age,
     required Gender? gender,
+    String phone = '',
+    String city = '',
   }) async {
     final e = email.trim().toLowerCase();
     if (name.trim().isEmpty) return t('Введите имя');
@@ -194,6 +225,9 @@ class AuthService {
     if (password.length < 6) return t('Пароль — минимум 6 символов');
     if (age < 5 || age > 120) return t('Укажите корректный возраст (5–120)');
     if (gender == null) return t('Выберите пол');
+    // Телефон нужен, чтобы прислать код подтверждения.
+    final ph = normalizePhone(phone);
+    if (ph.isEmpty) return t('Укажите номер телефона');
     final users = _users();
     if (users.any((u) => u.email == e)) {
       return t('Аккаунт с таким email уже есть');
@@ -205,6 +239,8 @@ class AuthService {
       createdAt: DateTime.now(),
       age: age,
       gender: gender,
+      phone: ph,
+      city: city.trim(),
     ));
     await _saveUsers(users);
     await _prefs.setString(_currentKey, e);

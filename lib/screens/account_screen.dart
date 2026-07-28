@@ -8,6 +8,7 @@ import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 import 'settings_screen.dart';
 import 'shop_screen.dart';
+import 'verify_phone_screen.dart';
 import 'zikr_settings_sheet.dart';
 
 /// Личный кабинет: без входа — форма регистрации/авторизации,
@@ -57,6 +58,8 @@ class _AuthFormState extends State<_AuthForm> {
   Gender? _gender;
   final _name = TextEditingController();
   final _age = TextEditingController();
+  final _phone = TextEditingController();
+  final _city = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
 
@@ -64,6 +67,8 @@ class _AuthFormState extends State<_AuthForm> {
   void dispose() {
     _name.dispose();
     _age.dispose();
+    _phone.dispose();
+    _city.dispose();
     _email.dispose();
     _password.dispose();
     super.dispose();
@@ -83,12 +88,27 @@ class _AuthFormState extends State<_AuthForm> {
             email: _email.text,
             password: _password.text,
             age: int.tryParse(_age.text.trim()) ?? 0,
-            gender: _gender);
+            gender: _gender,
+            phone: _phone.text,
+            city: _city.text);
     if (!mounted) return;
     setState(() {
       _busy = false;
       _error = err;
     });
+    // Успешная регистрация — сразу просим подтвердить телефон.
+    if (err == null && !_isLogin) {
+      final u = state.auth?.current;
+      if (u != null && u.phone.isNotEmpty) {
+        await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                VerifyPhoneScreen(email: u.email, phone: u.phone),
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -144,6 +164,25 @@ class _AuthFormState extends State<_AuthForm> {
                                 keyboardType: TextInputType.number,
                                 decoration:
                                     _dec('Возраст', Icons.cake_outlined),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: TextField(
+                                controller: _phone,
+                                keyboardType: TextInputType.phone,
+                                decoration: _dec('Телефон', Icons.phone_outlined)
+                                    .copyWith(hintText: '0555 12 34 56'),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: TextField(
+                                controller: _city,
+                                textCapitalization:
+                                    TextCapitalization.words,
+                                decoration: _dec(
+                                    'Город', Icons.location_city_outlined),
                               ),
                             ),
                             Padding(
