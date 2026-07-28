@@ -67,6 +67,34 @@ CODE_MAX_ATTEMPTS = 5            # неверных попыток на код
 CODE_RESEND_MS = 60 * 1000       # не чаще одного кода в минуту
 _MAX_VERIFY = 5000
 
+# Ограничение частоты: сколько запросов с одного адреса за окно.
+RATE_WINDOW_S = 60
+RATE_ANON = 20          # анонимные POST (/users, /comments, /verify/request)
+RATE_AUTH_FAIL = 10     # неудачные попытки авторизации
+
+_hits = {}              # (ключ, ip) -> [метки времени]
+_rate_lock = threading.Lock()
+
+
+def _rate_ok(key, ip, limit):
+    """Пускать ли запрос. Скользящее окно в памяти — сбрасывается при
+    перезапуске, но своё дело (спам и перебор пароля) делает."""
+    now = time.time()
+    with _rate_lock:
+        hits = [t for t in _hits.get((key, ip), []) if now - t < RATE_WINDOW_S]
+        if len(hits) >= limit:
+            _hits[(key, ip)] = hits
+            return False
+        hits.append(now)
+        _hits[(key, ip)] = hits
+        # Не даём словарю расти бесконечно.
+        if len(_hits) > 10000:
+            for k in [k for k, v in _hits.items()
+                      if not v or now - v[-1] > RATE_WINDOW_S]:
+                _hits.pop(k, None)
+        return True
+
+
 _lock = threading.Lock()
 os.chdir(ROOT)
 
@@ -120,7 +148,9 @@ def _keep_backup(path):
         d = VERSIONS
         os.makedirs(d, exist_ok=True)
         base = os.path.basename(path)
-        shutil.copy2(path, os.path.join(d, f'{base}.{int(time.time())}'))
+        # Метка с миллисекундами: два PUT в одну секунду не затрут копию.
+        stamp = int(time.time() * 1000)
+        shutil.copy2(path, os.path.join(d, f'{base}.{stamp}'))
         old = sorted(f for f in os.listdir(d) if f.startswith(base + '.'))
         for f in old[:-_BACKUPS]:
             os.remove(os.path.join(d, f))
@@ -415,10 +445,14 @@ def _upsert_user(data):
         users = _load_users()
         rec = next((x for x in users if x.get('email') == email), None)
         if rec is None:
+            # Раньше здесь стояло users[-_MAX_USERS:] — при переполнении
+            # вылетали САМЫЕ СТАРЫЕ, то есть настоящие первые ученики,
+            # а мусорные записи оставались. Теперь новые просто не заводим.
+            if len(users) >= _MAX_USERS:
+                return {'error': 'registry full'}
             rec = {'email': email, 'blocked': False, 'registeredAt': now,
                    'spent': 0}
             users.append(rec)
-            users = users[-_MAX_USERS:]
         # Дата создания аккаунта в приложении — база для анти-накрутки.
         # Ставится один раз и только в допустимом диапазоне.
         if 'accountCreatedAt' not in rec:
@@ -433,8 +467,17 @@ def _upsert_user(data):
         rec['age'] = age
         # Анкета: телефон и город приходят при регистрации. Пустым значением
         # не перетираем — старые сборки их просто не присылают.
-        if phone:
+        #
+        # Смена номера СБРАСЫВАЕТ отметку о подтверждении. Иначе посторонний
+        # POST-ом на чужой email подставлял свой номер, а значок «телефон
+        # подтверждён» оставался — админ видел бы чужой номер как проверенный.
+        # Полная защита профиля — это аутентификация студента (отдельная
+        # задача); здесь закрываем самое опасное следствие.
+        if phone and phone != rec.get('phone'):
             rec['phone'] = phone
+            if rec.get('verified'):
+                rec['verified'] = False
+                rec['verifyResetAt'] = now
         if city:
             rec['city'] = city
         rec['lastSeen'] = now
@@ -457,6 +500,39 @@ def _upsert_user(data):
     # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
     out['access'] = _access_for(email)
     return out
+
+
+def _set_blocked(data):
+    """Блокирует/разблокирует одного ученика.
+
+    Раньше и панель, и приложение устаза перезаписывали ВЕСЬ users.json
+    снимком, загруженным при открытии списка. Пока админ смотрел на экран,
+    ученики успевали отметиться (lastSeen, намазы, коины), а кто-то —
+    зарегистрироваться; запись поверх затирала и то, и другое. Точечная
+    операция под замком это исключает.
+    """
+    email = (data.get('email') or '').strip().lower()[:120]
+    blocked = bool(data.get('blocked'))
+    with _lock:
+        users = _load_users()
+        rec = next((x for x in users if x.get('email') == email), None)
+        if rec is None:
+            return 404, {'error': 'no user'}
+        rec['blocked'] = blocked
+        _save_users(users)
+        return 200, {'email': email, 'blocked': blocked}
+
+
+def _delete_user(data):
+    """Убирает ученика из реестра (аккаунт на его устройстве остаётся)."""
+    email = (data.get('email') or '').strip().lower()[:120]
+    with _lock:
+        users = _load_users()
+        rest = [x for x in users if x.get('email') != email]
+        if len(rest) == len(users):
+            return 404, {'error': 'no user'}
+        _save_users(rest)
+        return 200, {'email': email, 'deleted': True}
 
 
 def _redeem(data):
@@ -538,9 +614,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @property
+    def _ip(self):
+        # nginx впереди пока нет, поэтому адрес берём с сокета. Когда
+        # появится прокси, здесь понадобится X-Forwarded-For (и доверять
+        # ему можно будет только от самого прокси).
+        return self.client_address[0]
+
+    def _role_checked(self):
+        """Роль запроса с защитой от перебора пароля."""
+        role = _role(self.headers)
+        if role is None and self.headers.get('Authorization'):
+            # Считаем только неудачные попытки — успешные не наказываем.
+            if not _rate_ok('authfail', self._ip, RATE_AUTH_FAIL):
+                return 'ratelimited'
+        return role
+
     def _deny(self, code=401):
         self.send_response(code)
         self.end_headers()
+
+    def _too_many(self):
+        self._send_json(429, {'error': 'too many requests'})
 
     def list_directory(self, path):
         # Листинги перечисляли все файлы данных и загруженные уроки —
@@ -551,16 +646,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split('?')[0].rstrip('/')
         # Реестр аккаунтов, доступы и коды (ПДн) — только админ.
-        if p in _PROTECTED_GET and _role(self.headers) != 'admin':
-            self._deny()
-            return
-        if p in _AUTHED_GET and _role(self.headers) is None:
-            self._deny()
-            return
+        if p in _PROTECTED_GET or p in _AUTHED_GET:
+            role = self._role_checked()
+            if role == 'ratelimited':
+                self._too_many()
+                return
+            need_admin = p in _PROTECTED_GET
+            if role is None or (need_admin and role != 'admin'):
+                self._deny()
+                return
         return super().do_GET()
+
+    # Ручки без пароля: любой может засыпать реестр, чат и коды.
+    _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
+                  '/redeem')
 
     def do_POST(self):
         p = self.path.rstrip('/')
+        if p in self._ANON_POST and not _rate_ok('anon', self._ip, RATE_ANON):
+            self._too_many()
+            return
         n = int(self.headers.get('Content-Length', 0) or 0)
         raw = self.rfile.read(n) if n else b''
         try:
@@ -580,6 +685,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if rec is None:
                 self._send_json(400, {'error': 'bad email'})
                 return
+            if rec.get('error'):
+                self._send_json(507, rec)
+                return
             self._send_json(201, rec)
             return
         if p == '/redeem':
@@ -587,7 +695,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(code, body)
             return
         if p == '/auth/check':
-            role = _role(self.headers)
+            role = self._role_checked()
+            if role == 'ratelimited':
+                self._too_many()
+                return
             if role is None:
                 self._deny()
                 return
@@ -601,15 +712,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _confirm_code(data)
             self._send_json(code, body)
             return
+        if p in ('/users/flag', '/users/delete'):
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            code, body = (_set_blocked(data) if p == '/users/flag'
+                          else _delete_user(data))
+            self._send_json(code, body)
+            return
         if p == '/access/grant':
-            if _role(self.headers) != 'admin':
+            if self._role_checked() != 'admin':
                 self._deny()
                 return
             code, body = _grant_access(data)
             self._send_json(code, body)
             return
         if p == '/access/revoke':
-            if _role(self.headers) != 'admin':
+            if self._role_checked() != 'admin':
                 self._deny()
                 return
             code, body = _revoke_access(data)
@@ -627,7 +746,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_PUT(self):
-        role = _role(self.headers)
+        role = self._role_checked()
+        if role == 'ratelimited':
+            self._too_many()
+            return
         if role is None:
             self._deny()
             return

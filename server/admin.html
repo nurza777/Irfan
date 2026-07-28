@@ -452,20 +452,22 @@ function openStudent(email) {
     if (!err) { await loadAll(); $('#dlg').close(); render(); }
   }));
 
+  // Точечные операции вместо перезаписи всего users.json: пока админ
+  // смотрит на список, ученики отмечаются и регистрируются, и запись
+  // поверх старым снимком стирала бы их активность.
   $('#st-block').onclick = async () => {
-    u.blocked = !u.blocked;
-    const err = await putJson('/users.json', state.users);
-    toast(err || (u.blocked ? 'Доступ заблокирован' : 'Доступ восстановлен'));
-    if (err) await loadAll();
+    const err = await postJson('/users/flag',
+      { email, blocked: !u.blocked });
+    toast(err || (!u.blocked ? 'Доступ заблокирован' : 'Доступ восстановлен'));
+    await loadAll();
     $('#dlg').close(); render();
   };
 
   $('#st-del').onclick = async () => {
     if (!confirm(`Удалить «${u.name}» из реестра? Аккаунт на устройстве останется.`)) return;
-    state.users = state.users.filter((x) => x.email !== email);
-    const err = await putJson('/users.json', state.users);
+    const err = await postJson('/users/delete', { email });
     toast(err || 'Удалён из реестра');
-    if (err) await loadAll();
+    await loadAll();
     $('#dlg').close(); render();
   };
 }

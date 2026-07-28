@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
+import 'services/access_service.dart';
 import 'services/auth_service.dart';
 import 'services/home_widget_service.dart';
 import 'services/lang.dart';
@@ -285,6 +286,7 @@ class AppState extends ChangeNotifier {
       final blocked = await _reportActivity();
       if (blocked == true) {
         await auth!.logout();
+        AccessService.instance.clear();
         notifyListeners();
         return t('Аккаунт заблокирован администратором');
       }
@@ -295,6 +297,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> logoutAccount() async {
     await auth!.logout();
+    // Иначе следующий ученик на этом же устройстве увидел бы курсы,
+    // открытые предыдущему, — пока сервер не ответит по нему самому.
+    AccessService.instance.clear();
     notifyListeners();
   }
 
