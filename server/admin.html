@@ -198,6 +198,29 @@ function bar(label, count, total, color) {
   </div>`;
 }
 
+const fmtBytes = (b) => b >= 1 << 30 ? (b / 2 ** 30).toFixed(1) + ' ГБ'
+  : b >= 1 << 20 ? (b / 2 ** 20).toFixed(1) + ' МБ'
+  : (b / 1024).toFixed(0) + ' КБ';
+
+/// Загрузка файла с прогрессом. fetch не показывает ход отправки, поэтому XHR.
+function uploadFile(file, name, onProgress) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', API + '/uploads/' + encodeURIComponent(name));
+    xhr.setRequestHeader('Authorization', 'Basic ' + auth);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => resolve(
+      xhr.status === 201 ? null
+        : xhr.status === 415 ? 'Такой тип файла загружать нельзя'
+        : `Сервер ответил ${xhr.status}`);
+    xhr.onerror = () => resolve('Не удалось загрузить — проверьте связь');
+    xhr.send(file);
+  });
+}
+
 function dialog(html) {
   const d = $('#dlg');
   d.innerHTML = html;
@@ -207,14 +230,18 @@ function dialog(html) {
 
 // ——— Состояние ——————————————————————————————————————————————————
 
-const state = { users: [], access: [], codes: [], catalog: [], pending: {} };
+const state = {
+  users: [], access: [], codes: [], catalog: [], pending: {},
+  media: [], disk: {}, author: '',
+};
 
 async function loadAll() {
-  const [users, access, codes, courses, pc, pn, pa] = await Promise.all([
+  const [users, access, codes, courses, media, pc, pn, pa] = await Promise.all([
     getJson('/users.json', []),
     getJson('/access.json', []),
     getJson('/verifications.json', []),
     getJson('/courses.json', { directions: [] }),
+    getJson('/media.json', { items: [], disk: {} }),
     getJson('/courses_pending.json', null),
     getJson('/news_pending.json', null),
     getJson('/azkar_pending.json', null),
@@ -223,6 +250,9 @@ async function loadAll() {
   state.access = Array.isArray(access) ? access : [];
   state.codes = (Array.isArray(codes) ? codes : []).slice().reverse();
   state.catalog = courses?.directions || [];
+  state.author = courses?.author || '';
+  state.media = media?.items || [];
+  state.disk = media?.disk || {};
   state.pending = { courses: pc, news: pn, azkar: pa };
 }
 
@@ -234,6 +264,8 @@ const activeGrants = (email) => state.access.filter((g) =>
 const TABS = [
   ['stats', 'Статистика', viewStats],
   ['users', 'Ученики', viewUsers],
+  ['courses', 'Курсы', viewCourses],
+  ['media', 'Видео', viewMedia],
   ['access', 'Доступы', viewAccess],
   ['codes', 'Коды', viewCodes],
   ['moderation', 'Модерация', viewModeration],
@@ -519,6 +551,158 @@ function viewCodes() {
   </div>`;
 }
 
+
+// — Видео и файлы
+
+function viewMedia() {
+  const d = state.disk;
+  const used = state.media.reduce((a, m) => a + m.size, 0);
+  return `
+  <div class="card">
+    <h2>Загрузить видео</h2>
+    <p class="muted">MP4, MOV, M4V — а также аудио, PDF и картинки.
+      Файл кладётся на сервер и сразу доступен приложению по прямой ссылке.</p>
+    <div id="drop" style="margin-top:12px;border:1px dashed var(--line);
+         border-radius:12px;padding:22px;text-align:center">
+      <p style="margin:0 0 10px">Перетащите файлы сюда или</p>
+      <input type="file" id="file" multiple
+             accept="video/*,audio/*,.pdf,image/*" style="max-width:340px">
+    </div>
+    <div id="progress" style="margin-top:12px"></div>
+    ${d.free ? `<p class="muted" style="margin-top:12px">
+      Занято уроками: ${fmtBytes(used)} · свободно на диске:
+      ${fmtBytes(d.free)} из ${fmtBytes(d.total)}</p>` : ''}
+  </div>
+
+  <div class="card">
+    <h2>На сервере (${state.media.length})</h2>
+    ${state.media.length ? `<table><thead><tr>
+      <th>Файл</th><th>Размер</th><th>Загружен</th><th>Где используется</th><th></th>
+    </tr></thead><tbody>
+    ${state.media.map((m) => `<tr>
+      <td style="max-width:340px;word-break:break-all">${esc(m.name)}</td>
+      <td>${fmtBytes(m.size)}</td>
+      <td class="muted">${fmtDateTime(m.mtime)}</td>
+      <td>${m.usedIn.length
+            ? m.usedIn.map((u) => `<div class="muted">${esc(u)}</div>`).join('')
+            : '<span class="muted">нигде</span>'}</td>
+      <td class="row-actions">
+        <button data-copy="${esc(m.url)}">Ссылка</button>
+        <button class="danger" data-delmedia="${esc(m.name)}"
+                data-used="${m.usedIn.length}">Удалить</button>
+      </td>
+    </tr>`).join('')}</tbody></table>`
+      : '<p class="muted">Пока ничего не загружено.</p>'}
+  </div>`;
+}
+
+async function doUpload(files) {
+  const box = $('#progress');
+  for (const file of files) {
+    const line = document.createElement('div');
+    line.className = 'bar';
+    line.innerHTML = `<span class="lbl">${esc(file.name.slice(0, 14))}</span>
+      <span class="track"><span class="fill" style="width:0%"></span></span>
+      <span class="val">0%</span>`;
+    box.appendChild(line);
+    const fill = line.querySelector('.fill');
+    const val = line.querySelector('.val');
+    const err = await uploadFile(file, file.name, (f) => {
+      fill.style.width = Math.round(f * 100) + '%';
+      val.textContent = Math.round(f * 100) + '%';
+    });
+    val.textContent = err ? 'ошибка' : 'готово';
+    if (err) { line.querySelector('.fill').style.background = 'var(--red)'; toast(err); }
+  }
+  await loadAll();
+  render();
+}
+
+// — Каталог курсов
+
+function viewCourses() {
+  return `
+  <div class="card">
+    <h2>Каталог курсов</h2>
+    <p class="muted">Направление → курс → урок. Ученик увидит здесь то, к чему
+      вы открыли ему доступ.</p>
+    <div class="row-actions" style="margin-top:12px">
+      <button id="add-dir">Добавить направление</button>
+      <button class="primary" id="save-catalog">Опубликовать студентам</button>
+    </div>
+  </div>
+  ${state.catalog.length ? state.catalog.map((d, di) => `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px">
+        <h2 style="margin:0;flex:1">📁 ${esc(d.title)}</h2>
+        <button data-rendir="${di}">Переименовать</button>
+        <button data-addcourse="${di}">+ курс</button>
+        <button class="danger" data-deldir="${di}">Удалить</button>
+      </div>
+      ${(d.courses || []).map((c, ci) => `
+        <div style="margin-top:12px;padding-left:14px;border-left:2px solid var(--line)">
+          <div style="display:flex;align-items:center;gap:10px">
+            <b style="flex:1">${esc(c.title)}</b>
+            <span class="muted">${esc(c.subtitle || '')}</span>
+            <button data-rencourse="${di}.${ci}">Правка</button>
+            <button data-addlesson="${di}.${ci}">+ урок</button>
+            <button class="danger" data-delcourse="${di}.${ci}">Удалить</button>
+          </div>
+          ${(c.lessons || []).length ? `<table style="margin-top:8px"><tbody>
+            ${c.lessons.map((l, li) => `<tr>
+              <td style="width:26px">${li + 1}</td>
+              <td>${esc(l.title)}<br>
+                <span class="muted" style="word-break:break-all">${esc(l.url)}</span></td>
+              <td style="width:170px" class="row-actions">
+                <button data-renlesson="${di}.${ci}.${li}">Правка</button>
+                <button class="danger" data-dellesson="${di}.${ci}.${li}">✕</button>
+              </td>
+            </tr>`).join('')}
+          </tbody></table>` : '<p class="muted" style="margin:8px 0">Уроков пока нет.</p>'}
+        </div>`).join('')}
+    </div>`).join('')
+    : '<div class="card"><p class="muted">Каталог пуст. Начните с направления.</p></div>'}`;
+}
+
+/// Диалог урока: название + ссылка, выбираемая из загруженных файлов.
+function lessonDialog(lesson, onSave) {
+  const opts = state.media.map((m) =>
+    `<option value="${esc(API + m.url)}">${esc(m.name)} · ${fmtBytes(m.size)}</option>`).join('');
+  dialog(`
+    <h2 style="margin-top:0">${lesson ? 'Урок' : 'Новый урок'}</h2>
+    <label>Название</label>
+    <input id="l-title" value="${esc(lesson?.title || '')}">
+    <label>Видео с сервера</label>
+    <select id="l-pick"><option value="">— выбрать из загруженных —</option>${opts}</select>
+    <label>Ссылка</label>
+    <input id="l-url" value="${esc(lesson?.url || '')}" placeholder="https://…">
+    <p class="muted">Можно выбрать загруженный файл выше или вставить внешнюю
+      ссылку (MP4 или HLS-плейлист .m3u8).</p>
+    <div class="row-actions" style="margin-top:14px">
+      <button class="primary" id="l-ok">Сохранить</button>
+      <button id="l-cancel">Отмена</button>
+    </div>`);
+  $('#l-pick').onchange = (e) => { if (e.target.value) $('#l-url').value = e.target.value; };
+  $('#l-cancel').onclick = () => $('#dlg').close();
+  $('#l-ok').onclick = () => {
+    const title = $('#l-title').value.trim();
+    const url = $('#l-url').value.trim();
+    if (!title || !url) return toast('Нужны название и ссылка');
+    $('#dlg').close();
+    onSave({ title, url });
+  };
+}
+
+async function saveCatalog() {
+  const err = await putJson('/courses.json', {
+    updated: new Date().toISOString(),
+    author: state.author || 'Устаз',
+    directions: state.catalog,
+  });
+  toast(err || 'Каталог опубликован студентам');
+  if (!err) { await loadAll(); render(); }
+}
+
 // — Модерация
 
 function viewModeration() {
@@ -598,6 +782,100 @@ function wire() {
     toast(err || 'Доступ закрыт');
     if (!err) { await loadAll(); render(); }
   }));
+
+  // — Видео
+  const fileInput = $('#file');
+  if (fileInput) {
+    fileInput.onchange = () => doUpload([...fileInput.files]);
+    const drop = $('#drop');
+    drop.ondragover = (e) => { e.preventDefault(); drop.style.borderColor = 'var(--gold)'; };
+    drop.ondragleave = () => { drop.style.borderColor = 'var(--line)'; };
+    drop.ondrop = (e) => {
+      e.preventDefault();
+      drop.style.borderColor = 'var(--line)';
+      doUpload([...e.dataTransfer.files]);
+    };
+  }
+  document.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
+    const url = API + b.dataset.copy;
+    try { await navigator.clipboard.writeText(url); toast('Ссылка скопирована'); }
+    catch { prompt('Скопируйте ссылку:', url); }
+  }));
+  document.querySelectorAll('[data-delmedia]').forEach((b) => (b.onclick = async () => {
+    const name = b.dataset.delmedia;
+    // Файл, на который ссылается урок, удалять молча нельзя.
+    const warn = +b.dataset.used
+      ? `Файл используется в ${b.dataset.used} урок(ах) — они перестанут открываться.\n\n`
+      : '';
+    if (!confirm(`${warn}Удалить «${name}» с сервера?`)) return;
+    const err = await postJson('/media/delete', { name });
+    toast(err || 'Файл удалён');
+    await loadAll(); render();
+  }));
+
+  // — Каталог курсов
+  const addDir = $('#add-dir');
+  if (addDir) addDir.onclick = () => {
+    const t = prompt('Название направления:', '');
+    if (!t?.trim()) return;
+    state.catalog.push({ title: t.trim(), courses: [] });
+    render();
+  };
+  const saveBtn = $('#save-catalog');
+  if (saveBtn) saveBtn.onclick = saveCatalog;
+
+  document.querySelectorAll('[data-rendir]').forEach((b) => (b.onclick = () => {
+    const d = state.catalog[+b.dataset.rendir];
+    const t = prompt('Название направления:', d.title);
+    if (t?.trim()) { d.title = t.trim(); render(); }
+  }));
+  document.querySelectorAll('[data-deldir]').forEach((b) => (b.onclick = () => {
+    const d = state.catalog[+b.dataset.deldir];
+    if (!confirm(`Удалить «${d.title}» со всеми курсами внутри?`)) return;
+    state.catalog.splice(+b.dataset.deldir, 1);
+    render();
+  }));
+  document.querySelectorAll('[data-addcourse]').forEach((b) => (b.onclick = () => {
+    const t = prompt('Название курса:', '');
+    if (!t?.trim()) return;
+    state.catalog[+b.dataset.addcourse].courses.push(
+      { title: t.trim(), subtitle: '', lessons: [] });
+    render();
+  }));
+  document.querySelectorAll('[data-rencourse]').forEach((b) => (b.onclick = () => {
+    const [di, ci] = b.dataset.rencourse.split('.').map(Number);
+    const c = state.catalog[di].courses[ci];
+    const t = prompt('Название курса:', c.title);
+    if (!t?.trim()) return;
+    const st = prompt('Подпись (можно пусто):', c.subtitle || '');
+    c.title = t.trim();
+    c.subtitle = (st || '').trim();
+    render();
+  }));
+  document.querySelectorAll('[data-delcourse]').forEach((b) => (b.onclick = () => {
+    const [di, ci] = b.dataset.delcourse.split('.').map(Number);
+    if (!confirm(`Удалить курс «${state.catalog[di].courses[ci].title}»?`)) return;
+    state.catalog[di].courses.splice(ci, 1);
+    render();
+  }));
+  document.querySelectorAll('[data-addlesson]').forEach((b) => (b.onclick = () => {
+    const [di, ci] = b.dataset.addlesson.split('.').map(Number);
+    lessonDialog(null, (l) => {
+      state.catalog[di].courses[ci].lessons.push(l);
+      render();
+    });
+  }));
+  document.querySelectorAll('[data-renlesson]').forEach((b) => (b.onclick = () => {
+    const [di, ci, li] = b.dataset.renlesson.split('.').map(Number);
+    const lessons = state.catalog[di].courses[ci].lessons;
+    lessonDialog(lessons[li], (l) => { lessons[li] = l; render(); });
+  }));
+  document.querySelectorAll('[data-dellesson]').forEach((b) => (b.onclick = () => {
+    const [di, ci, li] = b.dataset.dellesson.split('.').map(Number);
+    state.catalog[di].courses[ci].lessons.splice(li, 1);
+    render();
+  }));
+
   document.querySelectorAll('[data-approve]').forEach((b) =>
     (b.onclick = () => approve(b.dataset.approve)));
   document.querySelectorAll('[data-reject]').forEach((b) =>

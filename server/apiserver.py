@@ -20,9 +20,11 @@ import http.server
 import json
 import os
 import secrets
+import re
 import shutil
 import threading
 import time
+import urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'api')
 AUTH_FILE = '/etc/irfan/auth.json'
@@ -40,7 +42,7 @@ _MAX_REDEMPTIONS = 20000
 
 # Пути с ПДн — GET только для админа.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
-                  '/verifications.json')
+                  '/verifications.json', '/media.json')
 # Хеш пароля админа: не ПДн, но и не для публики — брутфорсится офлайн.
 # Достаточно любой роли: приложение устаза читает его до входа админом.
 _AUTHED_GET = ('/admin.json',)
@@ -126,6 +128,20 @@ def _role(headers):
         if secrets.compare_digest(got, hdr):
             return role
     return None
+
+
+# Куда вообще можно писать. Раньше админский PUT принимал любой путь внутри
+# api/ и создавал произвольные файлы и каталоги — в том числе .html, который
+# отдавался бы браузеру с нашего же адреса. Теперь список закрытый.
+_PUT_ALLOWED = ('/courses.json', '/news.json', '/azkar.json',
+                '/courses_pending.json', '/news_pending.json',
+                '/azkar_pending.json', '/users.json', '/admin.json',
+                '/status.json', '/live-title.txt')
+
+
+def _put_allowed(path):
+    p = path.split('?')[0]
+    return p in _PUT_ALLOWED or p.startswith('/uploads/')
 
 
 def _put_role_for(path):
@@ -502,6 +518,110 @@ def _upsert_user(data):
     return out
 
 
+UPLOADS = os.path.join(ROOT, 'uploads')
+
+# Что разрешаем заливать. Расширение проверяем, потому что каталог раздаётся
+# всем: html/js оттуда исполнялись бы в браузере с нашего же адреса.
+MEDIA_EXT = ('.mp4', '.mov', '.m4v', '.mp3', '.m4a', '.aac', '.pdf',
+             '.jpg', '.jpeg', '.png', '.webp')
+_SAFE_NAME = re.compile(r'[^A-Za-z0-9._-]+')
+
+# Кириллицу переводим в латиницу, иначе имя «урок 1.mp4» после вырезания
+# небезопасных символов превращалось в нечитаемый набор процентов и цифр.
+_TRANSLIT = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+    'ң': 'n', 'ө': 'o', 'ү': 'u',           # кыргызские
+}
+
+
+def _translit(text):
+    out = []
+    for ch in text:
+        low = ch.lower()
+        if low in _TRANSLIT:
+            t = _TRANSLIT[low]
+            out.append(t.upper() if ch.isupper() and t else t)
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def safe_upload_name(raw):
+    """Приводит имя файла к безопасному виду или возвращает ''."""
+    # Путь приходит percent-encoded — сперва раскодируем, иначе кириллица
+    # осталась бы вида %D1%83 и превратилась в мусор.
+    name = urllib.parse.unquote(str(raw or '')).strip()
+    name = os.path.basename(name)
+    stem, ext = os.path.splitext(name)
+    ext = ext.lower()
+    if ext not in MEDIA_EXT:
+        return ''
+    stem = _SAFE_NAME.sub('-', _translit(stem)).strip('-.')[:80]
+    if not stem:
+        stem = f'file-{int(time.time())}'
+    return stem + ext
+
+
+def _media_list():
+    """Загруженные файлы + сколько места осталось на диске."""
+    items = []
+    try:
+        for name in sorted(os.listdir(UPLOADS)):
+            full = os.path.join(UPLOADS, name)
+            if not os.path.isfile(full):
+                continue
+            st = os.stat(full)
+            items.append({
+                'name': name,
+                'size': st.st_size,
+                'mtime': int(st.st_mtime * 1000),
+                'url': f'/uploads/{name}',
+            })
+    except OSError:
+        pass
+    items.sort(key=lambda x: x['mtime'], reverse=True)
+    try:
+        du = shutil.disk_usage(ROOT)
+        disk = {'free': du.free, 'total': du.total}
+    except OSError:
+        disk = {}
+    # Где файл используется — чтобы не удалить урок, который смотрят.
+    used = {}
+    catalog = _read_json(os.path.join(ROOT, 'courses.json'), {})
+    for d in (catalog.get('directions') or []):
+        for c in (d.get('courses') or []):
+            for l in (c.get('lessons') or []):
+                url = l.get('url') or ''
+                key = url.rsplit('/', 1)[-1]
+                if key:
+                    used.setdefault(key, []).append(
+                        f"{d.get('title','')} / {c.get('title','')} / "
+                        f"{l.get('title','')}")
+    for it in items:
+        it['usedIn'] = used.get(it['name'], [])
+    return {'items': items, 'disk': disk}
+
+
+def _delete_media(data):
+    name = safe_upload_name(data.get('name'))
+    if not name:
+        return 400, {'error': 'bad name'}
+    full = os.path.join(UPLOADS, name)
+    if not os.path.abspath(full).startswith(os.path.abspath(UPLOADS)):
+        return 403, {'error': 'forbidden'}
+    if not os.path.isfile(full):
+        return 404, {'error': 'no file'}
+    try:
+        os.remove(full)
+    except OSError as e:
+        return 500, {'error': str(e)}
+    return 200, {'name': name, 'deleted': True}
+
+
 def _set_blocked(data):
     """Блокирует/разблокирует одного ученика.
 
@@ -593,7 +713,16 @@ def _mark_used(code):
     return 404, {'error': 'no code'}
 
 
+_RANGE_RE = re.compile(r'^bytes=(\d*)-(\d*)$')
+_CHUNK = 1 << 16
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
+    # Keep-alive: плеер шлёт десятки Range-запросов подряд, и открывать под
+    # каждый новое соединение — заметная задержка при перемотке.
+    # Обязательное условие: Content-Length есть у любого ответа (см. ниже).
+    protocol_version = 'HTTP/1.1'
+
     # Правильные типы для HLS (ABR-транскод отдаётся отсюда же).
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
@@ -604,7 +733,74 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Access-Control-Allow-Origin', '*')
+        # Без этого плеер не знает, что можно запрашивать куски файла.
+        self.send_header('Accept-Ranges', 'bytes')
         super().end_headers()
+
+    def _serve_range(self):
+        """Отдаёт кусок файла по заголовку Range. True — запрос обработан.
+
+        Базовый SimpleHTTPRequestHandler заголовок Range игнорирует и всегда
+        шлёт файл целиком: перемотка в уроке не работала, а iOS-плееру
+        приходилось тянуть весь ролик перед стартом. Для видео это
+        обязательная вещь, поэтому обрабатываем сами.
+        """
+        rng = (self.headers.get('Range') or '').strip()
+        if not rng:
+            return False
+        path = self.translate_path(self.path.split('?')[0])
+        if not os.path.isfile(path):
+            return False
+
+        size = os.path.getsize(path)
+        m = _RANGE_RE.match(rng)
+        if not m:
+            self._range_not_satisfiable(size)
+            return True
+        start_s, end_s = m.group(1), m.group(2)
+        if not start_s:
+            # «bytes=-N» — последние N байт.
+            n = int(end_s or 0)
+            if n <= 0:
+                self._range_not_satisfiable(size)
+                return True
+            start, end = max(0, size - n), size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+        if start >= size or end < start:
+            self._range_not_satisfiable(size)
+            return True
+        end = min(end, size - 1)
+        length = end - start + 1
+
+        self.send_response(206)
+        self.send_header('Content-Type', self.guess_type(path))
+        self.send_header('Content-Length', str(length))
+        self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.send_header('Last-Modified',
+                         self.date_time_string(os.stat(path).st_mtime))
+        self.end_headers()
+        try:
+            with open(path, 'rb') as f:
+                f.seek(start)
+                left = length
+                while left > 0:
+                    buf = f.read(min(_CHUNK, left))
+                    if not buf:
+                        break
+                    self.wfile.write(buf)
+                    left -= len(buf)
+        except (BrokenPipeError, ConnectionResetError):
+            # Плеер перемотал или закрыл урок — это норма, не ошибка.
+            pass
+        return True
+
+    def _range_not_satisfiable(self, size):
+        self.send_response(416)
+        self.send_header('Content-Range', f'bytes */{size}')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def _send_json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
@@ -632,6 +828,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _deny(self, code=401):
         self.send_response(code)
+        self.send_header('Content-Length', '0')
         self.end_headers()
 
     def _too_many(self):
@@ -655,6 +852,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if role is None or (need_admin and role != 'admin'):
                 self._deny()
                 return
+        if p == '/media.json':
+            self._send_json(200, _media_list())
+            return
+        if self._serve_range():
+            return
         return super().do_GET()
 
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
@@ -712,6 +914,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _confirm_code(data)
             self._send_json(code, body)
             return
+        if p == '/media/delete':
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            code, body = _delete_media(data)
+            self._send_json(code, body)
+            return
         if p in ('/users/flag', '/users/delete'):
             if self._role_checked() != 'admin':
                 self._deny()
@@ -742,10 +951,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _mark_used(data.get('code'))
             self._send_json(code, body)
             return
-        self.send_response(404)
-        self.end_headers()
+        self._send_json(404, {'error': 'not found'})
 
     def do_PUT(self):
+        if not _put_allowed(self.path):
+            self._send_json(403, {'error': 'path not writable'})
+            return
         role = self._role_checked()
         if role == 'ratelimited':
             self._too_many()
@@ -758,7 +969,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if need == 'admin' and role != 'admin':
             self._send_json(403, {'error': 'admin only'})
             return
-        path = self.translate_path(self.path)
+        # Имя файла в uploads чистим сами: каталог раздаётся всем, и
+        # заливать туда что попало (или уходить вверх по дереву) нельзя.
+        raw = self.path.split('?')[0]
+        if raw.startswith('/uploads/'):
+            name = safe_upload_name(raw[len('/uploads/'):])
+            if not name:
+                self._send_json(415, {'error': 'unsupported file type'})
+                return
+            os.makedirs(UPLOADS, exist_ok=True)
+            path = os.path.join(UPLOADS, name)
+        else:
+            path = self.translate_path(self.path)
         if not os.path.abspath(path).startswith(ROOT):
             self._deny(403)
             return
@@ -777,6 +999,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 f.write(data)
                 remaining -= len(data)
         self.send_response(201)
+        self.send_header('Content-Length', '0')
         self.end_headers()
 
 
