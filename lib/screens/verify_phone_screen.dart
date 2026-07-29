@@ -15,10 +15,8 @@ import '../widgets/glass.dart';
 /// автоотправка в WhatsApp не подключена, код выдаёт устаз — об этом прямо
 /// написано на экране, чтобы человек не ждал сообщения впустую.
 class VerifyPhoneScreen extends StatefulWidget {
-  final String email;
   final String phone;
-  const VerifyPhoneScreen(
-      {super.key, required this.email, required this.phone});
+  const VerifyPhoneScreen({super.key, required this.phone});
 
   @override
   State<VerifyPhoneScreen> createState() => _VerifyPhoneScreenState();
@@ -61,7 +59,7 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
       _sending = true;
       _error = null;
     });
-    final r = await VerifyService.requestCode(widget.email, widget.phone);
+    final r = await VerifyService.requestCode(widget.phone);
     if (!mounted) return;
     setState(() {
       _sending = false;
@@ -88,7 +86,7 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
       _busy = true;
       _error = null;
     });
-    final r = await VerifyService.confirm(widget.email, code);
+    final r = await VerifyService.confirm(widget.phone, code);
     if (!mounted) return;
     setState(() => _busy = false);
     if (r.isOk) {

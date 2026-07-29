@@ -5,6 +5,7 @@ import '../services/lang.dart';
 import '../services/prayer_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import 'wallpaper_sheet.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 import 'zikr_settings_sheet.dart';
@@ -170,6 +171,18 @@ class SettingsScreen extends StatelessWidget {
                             color:
                                 Colors.white.withValues(alpha: 0.4)),
                         onTap: () => showZikrSettings(context),
+                      ),
+                      Divider(
+                          height: 1,
+                          color: Colors.white.withValues(alpha: 0.1)),
+                      ListTile(
+                        leading: const Icon(Icons.wallpaper_outlined,
+                            color: AppColors.gold),
+                        title: Text(t('Обои')),
+                        subtitle: Text(t('Своё фото вместо стандартного')),
+                        trailing: const Icon(Icons.chevron_right,
+                            color: Colors.white54),
+                        onTap: () => showWallpaperSheet(context),
                       ),
                       Divider(
                           height: 1,

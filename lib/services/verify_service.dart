@@ -43,8 +43,8 @@ class VerifyResult {
 
 class VerifyService {
   /// Просит сервер выслать код на телефон.
-  static Future<VerifyResult> requestCode(String email, String phone) async {
-    final r = await _post('verify/request', {'email': email, 'phone': phone});
+  static Future<VerifyResult> requestCode(String phone) async {
+    final r = await _post('verify/request', {'phone': phone});
     if (r == null) return const VerifyResult(VerifyStatus.offline);
     final (code, body) = r;
     return switch (code) {
@@ -57,8 +57,8 @@ class VerifyService {
   }
 
   /// Отправляет введённый пользователем код.
-  static Future<VerifyResult> confirm(String email, String code) async {
-    final r = await _post('verify/confirm', {'email': email, 'code': code});
+  static Future<VerifyResult> confirm(String phone, String code) async {
+    final r = await _post('verify/confirm', {'phone': phone, 'code': code});
     if (r == null) return const VerifyResult(VerifyStatus.offline);
     final (status, body) = r;
     return switch (status) {

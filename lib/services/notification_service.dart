@@ -6,6 +6,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 import 'lang.dart';
 import 'prayer_service.dart';
+import 'private_zikr_service.dart';
 import 'settings_service.dart';
 
 /// Локальные напоминания о намазе (азан). Работают офлайн: времена намаза
@@ -59,10 +60,16 @@ class NotificationService {
   static Future<void> reschedule({
     required SettingsService settings,
     required AppLocation location,
+    PrivateZikrService? privateZikrs,
     int days = 4,
   }) async {
     await init();
     await _plugin.cancelAll();
+    // Напоминания о закрытых зикрах ставятся независимо от намазов: человек
+    // мог отключить азан, но оставить свои обеты.
+    if (privateZikrs != null) {
+      await _scheduleZikrs(privateZikrs, days);
+    }
     if (!settings.notificationsEnabled) return;
     final prayers = settings.notifyPrayers;
     if (prayers.isEmpty) return;
@@ -80,6 +87,52 @@ class NotificationService {
         if (!when.isAfter(now)) continue;
         await _scheduleOne(id++, k, when, before);
         if (id >= 60) return; // iOS держит максимум ~64 запланированных
+      }
+    }
+  }
+
+  /// Напоминания о закрытых зикрах — в заданные часы каждый день.
+  /// Идентификаторы со сдвигом 10000, чтобы не столкнуться с намазами.
+  static Future<void> _scheduleZikrs(
+      PrivateZikrService svc, int days) async {
+    final now = DateTime.now();
+    var id = 10000;
+    for (final z in svc.all) {
+      for (final r in z.reminders) {
+        for (var d = 0; d < days; d++) {
+          final day = now.add(Duration(days: d));
+          final when =
+              DateTime(day.year, day.month, day.day, r.hour, r.minute);
+          if (!when.isAfter(now)) continue;
+          // Если на этот день зикр уже закрыт, дёргать человека незачем.
+          if (d == 0 && svc.isClosedToday(day, z)) continue;
+          final left = svc.leftToday(day, z);
+          try {
+            await _plugin.zonedSchedule(
+              id++,
+              t('Зикр'),
+              appLang == Lang.ky
+                  ? '${z.title} — ${left > 0 ? left : z.target} калды'
+                  : '${z.title} — осталось ${left > 0 ? left : z.target}',
+              tz.TZDateTime.from(when, tz.local),
+              const NotificationDetails(
+                android: AndroidNotificationDetails(
+                  'private_zikr',
+                  'Закрытые зикры',
+                  importance: Importance.defaultImportance,
+                  priority: Priority.defaultPriority,
+                ),
+                iOS: DarwinNotificationDetails(),
+              ),
+              androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+              uiLocalNotificationDateInterpretation:
+                  UILocalNotificationDateInterpretation.absoluteTime,
+            );
+          } catch (e) {
+            debugPrint('zikr notification error: $e');
+          }
+          if (id > 10500) return;   // разумный потолок
+        }
       }
     }
   }

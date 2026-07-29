@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/lang.dart';
 import 'package:intl/intl.dart';
 
@@ -48,12 +49,7 @@ class PrayerTimesCard extends StatelessWidget {
                     ),
                   ),
                   if (k.isPrayer)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 14),
-                      child: Icon(Icons.volume_up_rounded,
-                          size: 18,
-                          color: Colors.white.withValues(alpha: 0.55)),
-                    ),
+                    _NotifyToggle(prayer: k),
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 350),
                     curve: Curves.easeOut,
@@ -114,6 +110,64 @@ class PrayerTimesCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Динамик рядом с намазом: тап включает и выключает напоминание именно
+/// об этом намазе. Раньше значок был просто картинкой и ни на что не влиял.
+class _NotifyToggle extends StatelessWidget {
+  final PrayerKey prayer;
+  const _NotifyToggle({required this.prayer});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = AppScope.of(context);
+    final settings = state.settings;
+    if (settings == null) return const SizedBox(width: 32);
+
+    // Если напоминания выключены целиком, значок приглушён: включать
+    // отдельный намаз бессмысленно, пока не поднят общий тумблер.
+    final allOn = settings.notificationsEnabled;
+    final on = allOn && settings.notifyPrayers.contains(prayer);
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: PressableScale(
+        onTap: () async {
+          final next = {...settings.notifyPrayers};
+          if (on) {
+            next.remove(prayer);
+          } else {
+            next.add(prayer);
+          }
+          // Первый же включённый намаз поднимает и общий тумблер —
+          // иначе тап выглядел бы так, будто ничего не произошло.
+          if (!allOn && next.isNotEmpty) {
+            final ok = await state.setNotificationsEnabled(true);
+            if (!ok) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(t(
+                        'Разрешите уведомления для «Ирфан» в настройках iOS'))));
+              }
+              return;
+            }
+          }
+          await state.setNotifyPrayers(next);
+          HapticFeedback.selectionClick();
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(
+            on ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+            size: 18,
+            color: on
+                ? AppColors.goldLight
+                : Colors.white.withValues(alpha: 0.3),
+          ),
+        ),
       ),
     );
   }

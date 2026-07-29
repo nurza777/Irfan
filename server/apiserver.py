@@ -205,6 +205,28 @@ def _add_comment(name, text):
     return item
 
 
+def _identity(data):
+    """Опознаватель студента — номер телефона.
+
+    Приложение перешло с почты на номер: люди помнят его, и код подтверждения
+    всё равно уходит туда. Поле email принимаем ради записей, заведённых
+    старыми сборками, — иначе их статистика и доступы осиротели бы.
+    """
+    phone = _norm_phone(data.get('phone'))
+    if phone:
+        return phone
+    legacy = (data.get('email') or '').strip().lower()[:120]
+    return legacy
+
+
+def _find_user(users, ident):
+    """Ищет запись по телефону или по прежнему опознавателю-почте."""
+    for u in users:
+        if u.get('phone') == ident or u.get('email') == ident:
+            return u
+    return None
+
+
 def _load_users():
     u = _read_json(USERS, [])
     return u if isinstance(u, list) else []
@@ -288,22 +310,27 @@ def _access_active(rec, now=None):
     return until is None or int(until) > now
 
 
-def _access_for(email):
+def _access_for(ident):
     """Действующие доступы студента — то, что видит его приложение."""
     now = int(time.time() * 1000)
     return [
         {'scope': r.get('scope'), 'key': r.get('key'), 'until': r.get('until')}
         for r in _load_access()
-        if r.get('email') == email and _access_active(r, now)
+        if r.get('student') == ident and _access_active(r, now)
     ]
+
+
+def _same_student(rec, ident):
+    """Записи, созданные до перехода на телефон, хранят почту в `email`."""
+    return rec.get('student') == ident or rec.get('email') == ident
 
 
 def _grant_access(data):
     """Выдаёт доступ. days=None/0 → бессрочно, иначе срок в днях."""
-    email = (data.get('email') or '').strip().lower()[:120]
+    ident = _identity(data)
     scope = data.get('scope')
     key = (data.get('key') or '').strip()[:200]
-    if '@' not in email or scope not in ('direction', 'course') or not key:
+    if not ident or scope not in ('direction', 'course') or not key:
         return 400, {'error': 'bad request'}
     try:
         days = int(data.get('days') or 0)
@@ -311,13 +338,13 @@ def _grant_access(data):
         days = 0
     now = int(time.time() * 1000)
     until = None if days <= 0 else now + days * 86400000
-    entry = {'email': email, 'scope': scope, 'key': key, 'until': until,
+    entry = {'student': ident, 'scope': scope, 'key': key, 'until': until,
              'grantedAt': now, 'days': days or None}
     with _lock:
         items = _load_access()
         # Повторная выдача на тот же курс продлевает, а не плодит записи.
         for r in items:
-            if (r.get('email') == email and r.get('scope') == scope
+            if (_same_student(r, ident) and r.get('scope') == scope
                     and r.get('key') == key):
                 r.update(entry)
                 r.pop('revoked', None)
@@ -330,14 +357,14 @@ def _grant_access(data):
 
 
 def _revoke_access(data):
-    email = (data.get('email') or '').strip().lower()[:120]
+    ident = _identity(data)
     scope = data.get('scope')
     key = (data.get('key') or '').strip()[:200]
     with _lock:
         items = _load_access()
         found = False
         for r in items:
-            if (r.get('email') == email and r.get('scope') == scope
+            if (_same_student(r, ident) and r.get('scope') == scope
                     and r.get('key') == key):
                 r['revoked'] = True
                 r['revokedAt'] = int(time.time() * 1000)
@@ -376,23 +403,20 @@ def _send_code(phone, code):
 
 def _request_code(data):
     """Создаёт код подтверждения и пытается его отправить."""
-    email = (data.get('email') or '').strip().lower()[:120]
     phone = _norm_phone(data.get('phone'))
-    if '@' not in email:
-        return 400, {'error': 'bad email'}
     if not phone:
         return 400, {'error': 'bad phone'}
     now = int(time.time() * 1000)
     with _lock:
         items = _load_verify()
         last = next((x for x in reversed(items)
-                     if x.get('email') == email), None)
+                     if x.get('phone') == phone), None)
         # Антиспам: не чаще одного кода в минуту на аккаунт.
         if last and now - int(last.get('createdAt') or 0) < CODE_RESEND_MS:
             wait = (CODE_RESEND_MS - (now - int(last['createdAt']))) // 1000
             return 429, {'error': 'too soon', 'retryAfter': wait}
         code = f'{secrets.randbelow(1000000):06d}'
-        entry = {'email': email, 'phone': phone, 'code': code,
+        entry = {'phone': phone, 'code': code,
                  'createdAt': now, 'expiresAt': now + CODE_TTL_MS,
                  'attempts': 0, 'used': False, 'delivered': False}
         entry['delivered'] = _send_code(phone, code)
@@ -404,13 +428,15 @@ def _request_code(data):
 
 
 def _confirm_code(data):
-    email = (data.get('email') or '').strip().lower()[:120]
+    phone = _norm_phone(data.get('phone'))
     code = ''.join(ch for ch in str(data.get('code') or '') if ch.isdigit())
+    if not phone:
+        return 400, {'error': 'bad phone'}
     now = int(time.time() * 1000)
     with _lock:
         items = _load_verify()
         entry = next((x for x in reversed(items)
-                      if x.get('email') == email and not x.get('used')), None)
+                      if x.get('phone') == phone and not x.get('used')), None)
         if entry is None:
             return 404, {'error': 'no code'}
         if now > int(entry.get('expiresAt') or 0):
@@ -426,10 +452,9 @@ def _confirm_code(data):
         entry['confirmedAt'] = now
         _save_verify(items)
         users = _load_users()
-        rec = next((x for x in users if x.get('email') == email), None)
+        rec = _find_user(users, phone)
         if rec is not None:
             rec['verified'] = True
-            rec['phone'] = entry.get('phone') or rec.get('phone')
             _save_users(users)
     return 200, {'verified': True}
 
@@ -437,8 +462,8 @@ def _confirm_code(data):
 def _upsert_user(data):
     """Заводит/обновляет запись студента по email (без пароля). Возвращает
     запись (с флагом blocked, который мог поставить админ) или None."""
-    email = (data.get('email') or '').strip().lower()[:120]
-    if '@' not in email or '.' not in email:
+    ident = _identity(data)
+    if not ident:
         return None
     name = (data.get('name') or '').strip()[:60] or 'Без имени'
     gender = data.get('gender') if data.get('gender') in ('male', 'female') else ''
@@ -447,7 +472,6 @@ def _upsert_user(data):
     except (ValueError, TypeError):
         age = 0
     age = max(0, min(150, age))
-    phone = _norm_phone(data.get('phone'))
     city = (data.get('city') or '').strip()[:60]
     now = int(time.time() * 1000)
 
@@ -459,14 +483,14 @@ def _upsert_user(data):
 
     with _lock:
         users = _load_users()
-        rec = next((x for x in users if x.get('email') == email), None)
+        rec = _find_user(users, ident)
         if rec is None:
             # Раньше здесь стояло users[-_MAX_USERS:] — при переполнении
             # вылетали САМЫЕ СТАРЫЕ, то есть настоящие первые ученики,
             # а мусорные записи оставались. Теперь новые просто не заводим.
             if len(users) >= _MAX_USERS:
                 return {'error': 'registry full'}
-            rec = {'email': email, 'blocked': False, 'registeredAt': now,
+            rec = {'phone': ident, 'blocked': False, 'registeredAt': now,
                    'spent': 0}
             users.append(rec)
         # Дата создания аккаунта в приложении — база для анти-накрутки.
@@ -481,19 +505,8 @@ def _upsert_user(data):
         rec['name'] = name
         rec['gender'] = gender
         rec['age'] = age
-        # Анкета: телефон и город приходят при регистрации. Пустым значением
-        # не перетираем — старые сборки их просто не присылают.
-        #
-        # Смена номера СБРАСЫВАЕТ отметку о подтверждении. Иначе посторонний
-        # POST-ом на чужой email подставлял свой номер, а значок «телефон
-        # подтверждён» оставался — админ видел бы чужой номер как проверенный.
-        # Полная защита профиля — это аутентификация студента (отдельная
-        # задача); здесь закрываем самое опасное следствие.
-        if phone and phone != rec.get('phone'):
-            rec['phone'] = phone
-            if rec.get('verified'):
-                rec['verified'] = False
-                rec['verifyResetAt'] = now
+        # Номер — он же опознаватель, менять его через этот вызов нельзя.
+        rec.setdefault('phone', ident)
         if city:
             rec['city'] = city
         rec['lastSeen'] = now
@@ -514,7 +527,7 @@ def _upsert_user(data):
         _save_users(users)
         out = dict(rec)
     # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
-    out['access'] = _access_for(email)
+    out['access'] = _access_for(ident)
     return out
 
 
@@ -642,28 +655,29 @@ def _set_blocked(data):
     зарегистрироваться; запись поверх затирала и то, и другое. Точечная
     операция под замком это исключает.
     """
-    email = (data.get('email') or '').strip().lower()[:120]
+    ident = _identity(data)
     blocked = bool(data.get('blocked'))
     with _lock:
         users = _load_users()
-        rec = next((x for x in users if x.get('email') == email), None)
+        rec = _find_user(users, ident)
         if rec is None:
             return 404, {'error': 'no user'}
         rec['blocked'] = blocked
         _save_users(users)
-        return 200, {'email': email, 'blocked': blocked}
+        return 200, {'student': ident, 'blocked': blocked}
 
 
 def _delete_user(data):
     """Убирает ученика из реестра (аккаунт на его устройстве остаётся)."""
-    email = (data.get('email') or '').strip().lower()[:120]
+    ident = _identity(data)
     with _lock:
         users = _load_users()
-        rest = [x for x in users if x.get('email') != email]
+        rest = [x for x in users
+                if x.get('phone') != ident and x.get('email') != ident]
         if len(rest) == len(users):
             return 404, {'error': 'no user'}
         _save_users(rest)
-        return 200, {'email': email, 'deleted': True}
+        return 200, {'student': ident, 'deleted': True}
 
 
 def _redeem(data):
@@ -671,17 +685,17 @@ def _redeem(data):
 
     Возвращает (код_ответа, тело).
     """
-    email = (data.get('email') or '').strip().lower()[:120]
+    ident = _identity(data)
     item_id = (data.get('itemId') or '').strip()[:40]
-    if '@' not in email:
-        return 400, {'error': 'bad email'}
+    if not ident:
+        return 400, {'error': 'bad phone'}
     cost = SHOP_ITEMS.get(item_id)
     if cost is None:
         return 400, {'error': 'unknown item'}
     now = int(time.time() * 1000)
     with _lock:
         users = _load_users()
-        rec = next((x for x in users if x.get('email') == email), None)
+        rec = _find_user(users, ident)
         if rec is None:
             return 404, {'error': 'no user'}
         if rec.get('blocked'):
@@ -692,7 +706,7 @@ def _redeem(data):
         rec['spent'] = int(rec.get('spent') or 0) + cost
         rec['balance'] = balance - cost
         code = 'IRF-' + secrets.token_hex(3).upper()
-        entry = {'code': code, 'email': email, 'name': rec.get('name', ''),
+        entry = {'code': code, 'student': ident, 'name': rec.get('name', ''),
                  'itemId': item_id, 'cost': cost, 'ts': now, 'used': False}
         items = _read_json(REDEMPTIONS, [])
         if not isinstance(items, list):

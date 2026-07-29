@@ -16,6 +16,7 @@ import '../widgets/dome_background.dart';
 import 'home_page.dart';
 import 'names_screen.dart';
 import 'news_screen.dart';
+import 'account_screen.dart';
 import 'azkar_screen.dart';
 import 'courses_page.dart';
 import 'qibla_page.dart';
@@ -95,6 +96,9 @@ class _RootScreenState extends State<RootScreen> {
           qs.setMode(ReadingMode.page);
           qs.setTranslation(translationById('kuliev'));
           qs.setReciter(reciterById('alafasy'));
+        } else if (screen == 'account') {
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const AccountScreen()));
         } else if (screen == 'courses') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const CoursesPage()));

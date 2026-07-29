@@ -60,7 +60,6 @@ class _AuthFormState extends State<_AuthForm> {
   final _age = TextEditingController();
   final _phone = TextEditingController();
   final _city = TextEditingController();
-  final _email = TextEditingController();
   final _password = TextEditingController();
 
   @override
@@ -69,7 +68,6 @@ class _AuthFormState extends State<_AuthForm> {
     _age.dispose();
     _phone.dispose();
     _city.dispose();
-    _email.dispose();
     _password.dispose();
     super.dispose();
   }
@@ -82,14 +80,13 @@ class _AuthFormState extends State<_AuthForm> {
     final state = AppScope.of(context);
     final err = _isLogin
         ? await state.loginAccount(
-            email: _email.text, password: _password.text)
+            phone: _phone.text, password: _password.text)
         : await state.registerAccount(
             name: _name.text,
-            email: _email.text,
+            phone: _phone.text,
             password: _password.text,
             age: int.tryParse(_age.text.trim()) ?? 0,
             gender: _gender,
-            phone: _phone.text,
             city: _city.text);
     if (!mounted) return;
     setState(() {
@@ -103,8 +100,7 @@ class _AuthFormState extends State<_AuthForm> {
         await Navigator.push<bool>(
           context,
           MaterialPageRoute(
-            builder: (_) =>
-                VerifyPhoneScreen(email: u.email, phone: u.phone),
+            builder: (_) => VerifyPhoneScreen(phone: u.phone),
           ),
         );
       }
@@ -169,15 +165,6 @@ class _AuthFormState extends State<_AuthForm> {
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
                               child: TextField(
-                                controller: _phone,
-                                keyboardType: TextInputType.phone,
-                                decoration: _dec('Телефон', Icons.phone_outlined)
-                                    .copyWith(hintText: '0555 12 34 56'),
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: TextField(
                                 controller: _city,
                                 textCapitalization:
                                     TextCapitalization.words,
@@ -201,10 +188,11 @@ class _AuthFormState extends State<_AuthForm> {
                         ),
                 ),
                 TextField(
-                  controller: _email,
-                  keyboardType: TextInputType.emailAddress,
+                  controller: _phone,
+                  keyboardType: TextInputType.phone,
                   autocorrect: false,
-                  decoration: _dec('Email', Icons.mail_outline),
+                  decoration: _dec('Телефон', Icons.phone_outlined)
+                      .copyWith(hintText: '+996 555 12 34 56'),
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -446,7 +434,7 @@ class _Profile extends StatelessWidget {
                         style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w700)),
-                    Text(user.email as String,
+                    Text(user.phone as String,
                         style: TextStyle(
                             fontSize: 14,
                             color: Colors.white

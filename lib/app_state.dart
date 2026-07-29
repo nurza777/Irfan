@@ -8,10 +8,12 @@ import 'services/home_widget_service.dart';
 import 'services/lang.dart';
 import 'services/notification_service.dart';
 import 'services/prayer_service.dart';
+import 'services/private_zikr_service.dart';
 import 'services/quran_service.dart';
 import 'services/settings_service.dart';
 import 'services/shop_service.dart';
 import 'services/tracker_service.dart';
+import 'services/wallpaper_service.dart';
 import 'services/user_registry.dart';
 import 'services/zikr_service.dart';
 
@@ -26,6 +28,7 @@ class AppState extends ChangeNotifier {
   SettingsService? settings;
   QuranService? quran;
   ShopService? shop;
+  PrivateZikrService? privateZikrs;
   DateTime now = DateTime.now();
   Timer? _ticker;
 
@@ -65,10 +68,10 @@ class AppState extends ChangeNotifier {
   /// Обмен коинов. Баланс проверяет и код выдаёт сервер — локальная проверка
   /// ниже нужна лишь чтобы не ходить в сеть с заведомо пустым балансом.
   Future<RedeemResult> redeem(ShopItem item) async {
-    final email = auth?.current?.email;
-    if (shop == null || email == null) return RedeemResult.error();
+    final phone = auth?.current?.phone;
+    if (shop == null || phone == null) return RedeemResult.error();
     if (coins < item.cost) return RedeemResult.notEnough(coins);
-    final r = await shop!.redeem(item, email);
+    final r = await shop!.redeem(item, phone);
     notifyListeners();
     return r;
   }
@@ -81,7 +84,9 @@ class AppState extends ChangeNotifier {
     appLang = settings!.lang; // применить выбранный язык до первого кадра
     quran = await QuranService.create();
     shop = await ShopService.create();
+    privateZikrs = await PrivateZikrService.create();
     await HomeWidgetService.init();
+    await WallpaperService.instance.init();
     _applyLocationSetting();
     _recompute();
     _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
@@ -117,7 +122,15 @@ class AppState extends ChangeNotifier {
 
   void _rescheduleNotifications() {
     if (settings == null) return;
-    NotificationService.reschedule(settings: settings!, location: location);
+    NotificationService.reschedule(
+        settings: settings!,
+        location: location,
+        privateZikrs: privateZikrs);
+  }
+
+  /// Перепланировать напоминания извне (например, после правки обета).
+  Future<void> rescheduleNotifications() async {
+    _rescheduleNotifications();
   }
 
   /// Включить/выключить напоминания о намазе. При включении спрашивает
@@ -250,20 +263,18 @@ class AppState extends ChangeNotifier {
 
   Future<String?> registerAccount({
     required String name,
-    required String email,
+    required String phone,
     required String password,
     required int age,
     required Gender? gender,
-    String phone = '',
     String city = '',
   }) async {
     final err = await auth!.register(
         name: name,
-        email: email,
+        phone: phone,
         password: password,
         age: age,
         gender: gender,
-        phone: phone,
         city: city);
     // Сообщаем профиль на сервер, чтобы админ видел новый аккаунт (без пароля).
     if (err == null && auth!.current != null) {
@@ -279,8 +290,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<String?> loginAccount(
-      {required String email, required String password}) async {
-    final err = await auth!.login(email: email, password: password);
+      {required String phone, required String password}) async {
+    final err = await auth!.login(phone: phone, password: password);
     if (err == null && auth!.current != null) {
       // Отмечаемся на сервере (профиль + активность) и проверяем блокировку.
       final blocked = await _reportActivity();

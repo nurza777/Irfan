@@ -33,55 +33,53 @@ String normalizePhone(String v) {
 /// Локальная учётная запись (хранится на устройстве; бэкенда пока нет).
 class UserAccount {
   final String name;
-  final String email;
+
+  /// Номер телефона в виде +996XXXXXXXXX — он же опознаватель аккаунта.
+  /// Почты в приложении больше нет: люди помнят номер, а не адрес, и код
+  /// подтверждения всё равно идёт на телефон.
+  final String phone;
   final String passHash;
   final DateTime createdAt;
   final int age;
   final Gender gender;
-  final String phone;
   final String city;
   const UserAccount({
     required this.name,
-    required this.email,
+    required this.phone,
     required this.passHash,
     required this.createdAt,
     required this.age,
     required this.gender,
-    this.phone = '',
     this.city = '',
   });
 
   UserAccount copyWith(
-          {int? age,
-          Gender? gender,
-          String? passHash,
-          String? phone,
-          String? city}) =>
+          {int? age, Gender? gender, String? passHash, String? city}) =>
       UserAccount(
         name: name,
-        email: email,
+        phone: phone,
         passHash: passHash ?? this.passHash,
         createdAt: createdAt,
         age: age ?? this.age,
         gender: gender ?? this.gender,
-        phone: phone ?? this.phone,
         city: city ?? this.city,
       );
 
   Map<String, dynamic> toJson() => {
         'name': name,
-        'email': email,
+        'phone': phone,
         'passHash': passHash,
         'createdAt': createdAt.toIso8601String(),
         'age': age,
         'gender': gender.name,
-        'phone': phone,
         'city': city,
       };
 
   factory UserAccount.fromJson(Map<String, dynamic> j) => UserAccount(
         name: j['name'] as String,
-        email: j['email'] as String,
+        // Аккаунты старых сборок опознавались почтой — переносим их на
+        // телефон, если он был указан в анкете.
+        phone: (j['phone'] as String?) ?? (j['email'] as String? ?? ''),
         passHash: j['passHash'] as String,
         createdAt:
             DateTime.tryParse(j['createdAt'] as String? ?? '') ??
@@ -90,7 +88,6 @@ class UserAccount {
         gender: Gender.values.firstWhere(
             (g) => g.name == j['gender'],
             orElse: () => Gender.male),
-        phone: j['phone'] as String? ?? '',
         city: j['city'] as String? ?? '',
       );
 }
@@ -151,9 +148,9 @@ class AuthService {
 
   /// Текущий вошедший пользователь, либо null.
   UserAccount? get current {
-    final email = _prefs.getString(_currentKey);
-    if (email == null) return null;
-    return _users().where((u) => u.email == email).firstOrNull;
+    final phone = _prefs.getString(_currentKey);
+    if (phone == null) return null;
+    return _users().where((u) => u.phone == phone).firstOrNull;
   }
 
   static const _iterations = 120000;
@@ -191,7 +188,7 @@ class AuthService {
   /// Проверка пароля против сохранённого хеша.
   /// `ok` — совпал; `needsUpgrade` — старый формат, надо пересохранить.
   Future<({bool ok, bool needsUpgrade})> _verify(
-      String email, String password, String stored) async {
+      String login, String password, String stored) async {
     if (stored.startsWith('pbkdf2\$')) {
       final parts = stored.split('\$'); // pbkdf2, iter, saltHex, hashHex
       if (parts.length != 4) return (ok: false, needsUpgrade: false);
@@ -201,58 +198,51 @@ class AuthService {
           _pbkdf2Sync, _Pbkdf2Req(password, _unhex(parts[2]), iter));
       return (ok: _constEq(_hex(dk), parts[3]), needsUpgrade: false);
     }
-    // Legacy: несолёный SHA-256 от `email:пароль`.
+    // Legacy: несолёный SHA-256 от `логин:пароль`.
     final legacy =
-        sha256.convert(utf8.encode('$email:$password')).toString();
+        sha256.convert(utf8.encode('$login:$password')).toString();
     return (ok: _constEq(legacy, stored), needsUpgrade: true);
   }
-
-  static final _emailRe = RegExp(r'^[\w.+-]+@[\w-]+\.[\w.-]+$');
 
   /// null — успех (и сразу вход), иначе текст ошибки.
   Future<String?> register({
     required String name,
-    required String email,
+    required String phone,
     required String password,
     required int age,
     required Gender? gender,
-    String phone = '',
     String city = '',
   }) async {
-    final e = email.trim().toLowerCase();
     if (name.trim().isEmpty) return t('Введите имя');
-    if (!_emailRe.hasMatch(e)) return t('Некорректный email');
+    final ph = normalizePhone(phone);
+    if (ph.isEmpty) return t('Некорректный номер телефона');
     if (password.length < 6) return t('Пароль — минимум 6 символов');
     if (age < 5 || age > 120) return t('Укажите корректный возраст (5–120)');
     if (gender == null) return t('Выберите пол');
-    // Телефон нужен, чтобы прислать код подтверждения.
-    final ph = normalizePhone(phone);
-    if (ph.isEmpty) return t('Укажите номер телефона');
     final users = _users();
-    if (users.any((u) => u.email == e)) {
-      return t('Аккаунт с таким email уже есть');
+    if (users.any((u) => u.phone == ph)) {
+      return t('Аккаунт с таким номером уже есть');
     }
     users.add(UserAccount(
       name: name.trim(),
-      email: e,
+      phone: ph,
       passHash: await _newHash(password),
       createdAt: DateTime.now(),
       age: age,
       gender: gender,
-      phone: ph,
       city: city.trim(),
     ));
     await _saveUsers(users);
-    await _prefs.setString(_currentKey, e);
+    await _prefs.setString(_currentKey, ph);
     return null;
   }
 
   /// Обновляет возраст/пол текущего пользователя.
   Future<void> updateCurrentProfile({int? age, Gender? gender}) async {
-    final email = _prefs.getString(_currentKey);
-    if (email == null) return;
+    final phone = _prefs.getString(_currentKey);
+    if (phone == null) return;
     final users = _users();
-    final i = users.indexWhere((u) => u.email == email);
+    final i = users.indexWhere((u) => u.phone == phone);
     if (i < 0) return;
     users[i] = users[i].copyWith(age: age, gender: gender);
     await _saveUsers(users);
@@ -260,22 +250,28 @@ class AuthService {
 
   /// null — успех, иначе текст ошибки.
   Future<String?> login(
-      {required String email, required String password}) async {
-    final e = email.trim().toLowerCase();
-    final user = _users().where((u) => u.email == e).firstOrNull;
+      {required String phone, required String password}) async {
+    // Аккаунты старых сборок опознавались почтой. Чтобы люди не потеряли
+    // свою статистику, пускаем и по ней: если введённое не похоже на номер,
+    // ищем совпадение как есть.
+    final raw = phone.trim().toLowerCase();
+    final ph = normalizePhone(phone);
+    final key = ph.isEmpty ? raw : ph;
+    if (key.isEmpty) return t('Некорректный номер телефона');
+    final user = _users().where((u) => u.phone == key).firstOrNull;
     if (user == null) return t('Аккаунт не найден');
-    final res = await _verify(e, password, user.passHash);
+    final res = await _verify(key, password, user.passHash);
     if (!res.ok) return t('Неверный пароль');
     // Прозрачно переводим старый несолёный SHA-256 на PBKDF2.
     if (res.needsUpgrade) {
       final users = _users();
-      final i = users.indexWhere((u) => u.email == e);
+      final i = users.indexWhere((u) => u.phone == key);
       if (i >= 0) {
         users[i] = users[i].copyWith(passHash: await _newHash(password));
         await _saveUsers(users);
       }
     }
-    await _prefs.setString(_currentKey, e);
+    await _prefs.setString(_currentKey, ph);
     return null;
   }
 

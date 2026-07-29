@@ -263,8 +263,12 @@ async function loadAll() {
   state.pending = { courses: pc, news: pn, azkar: pa };
 }
 
-const activeGrants = (email) => state.access.filter((g) =>
-  g.email === email && !g.revoked && (g.until == null || g.until > Date.now()));
+/// Опознаватель студента — номер телефона. Поле email встречается только
+/// у записей, заведённых до перехода на номера.
+const identOf = (u) => u.phone || u.email || '';
+const activeGrants = (id) => state.access.filter((g) =>
+  (g.student ?? g.email) === id && !g.revoked
+  && (g.until == null || g.until > Date.now()));
 
 // ——— Разделы ————————————————————————————————————————————————————
 
@@ -371,18 +375,19 @@ function viewUsers() {
 function usersTable(query = '') {
   const q = query.trim().toLowerCase();
   const rows = state.users.filter((u) => !q ||
-    [u.name, u.email, u.phone, u.city].some((v) => (v || '').toLowerCase().includes(q)));
+    [u.name, u.phone, u.email, u.city].some((v) => (v || '').toLowerCase().includes(q)));
   if (!rows.length) return '<p class="muted">Ничего не найдено.</p>';
   return `<table><thead><tr>
-      <th>Имя</th><th>Контакты</th><th>Пол / возраст</th>
+      <th>Имя</th><th>Телефон</th><th>Пол / возраст</th>
       <th>Намазы</th><th>Серия</th><th>Баланс</th><th>Доступы</th><th></th>
     </tr></thead><tbody>
     ${rows.map((u) => {
-      const g = activeGrants(u.email).length;
-      return `<tr class="row" data-email="${esc(u.email)}">
+      const id = identOf(u);
+      const g = activeGrants(id).length;
+      return `<tr class="row" data-id="${esc(id)}">
         <td><b>${esc(u.name || '—')}</b>${u.blocked ? ' <span class="tag bad">блок</span>' : ''}</td>
-        <td>${esc(u.email)}<br><span class="muted">${esc(u.phone || 'телефон не указан')}
-          ${u.phone ? (u.verified ? '<span class="tag ok">✓</span>' : '<span class="tag warn">не подтв.</span>') : ''}</span></td>
+        <td><b>${esc(u.phone || u.email || '—')}</b>
+          ${u.phone ? (u.verified ? '<span class="tag ok">✓</span>' : '<span class="tag warn">не подтв.</span>') : ''}</td>
         <td>${u.gender === 'male' ? 'муж' : u.gender === 'female' ? 'жен' : '—'} ·
             ${u.age || '—'}<br><span class="muted">${esc(u.city || '')}</span></td>
         <td>${u.prayersRead || 0}</td>
@@ -395,21 +400,22 @@ function usersTable(query = '') {
   </tbody></table>`;
 }
 
-function openStudent(email) {
-  const u = state.users.find((x) => x.email === email);
+function openStudent(id) {
+  const u = state.users.find((x) => identOf(x) === id);
   if (!u) return;
-  const grants = activeGrants(email);
+  const email = id;                       // ключ для запросов к серверу
+  const grants = activeGrants(id);
   const fromPrayers = (u.prayersRead || 0) * 5;
   const fromZikr = Math.max(0, (u.coins || 0) - fromPrayers);
 
   dialog(`
     <h2 style="margin:0 0 4px">${esc(u.name || '—')}</h2>
-    <p class="muted" style="margin:0 0 14px">${esc(u.email)}</p>
+    <p class="muted" style="margin:0 0 14px">${esc(u.phone || u.email || '')}</p>
 
     <div class="card" style="margin:0 0 12px">
       <h2>Анкета</h2>
       <table>
-        <tr><td class="muted">Телефон</td><td>${esc(u.phone || 'не указан')}
+        <tr><td class="muted">Номер</td><td>${esc(u.phone || u.email || 'не указан')}
           ${u.phone ? (u.verified ? '<span class="tag ok">подтверждён</span>' : '<span class="tag warn">не подтверждён</span>') : ''}</td></tr>
         <tr><td class="muted">Город</td><td>${esc(u.city || 'не указан')}</td></tr>
         <tr><td class="muted">Пол</td><td>${u.gender === 'male' ? 'мужской' : u.gender === 'female' ? 'женский' : 'не указан'}</td></tr>
@@ -479,14 +485,14 @@ function openStudent(email) {
     const sel = $('#gr-days').value;
     const days = sel === 'custom' ? parseInt($('#gr-custom').value || '0', 10) : parseInt(sel, 10);
     const err = await postJson('/access/grant',
-      { email, scope, key: rest.join('|'), days: days || 0 });
+      { phone: email, scope, key: rest.join('|'), days: days || 0 });
     toast(err || 'Доступ выдан');
     if (!err) { await loadAll(); $('#dlg').close(); render(); }
   };
 
   document.querySelectorAll('[data-revoke]').forEach((b) => (b.onclick = async () => {
     const [scope, ...rest] = b.dataset.revoke.split('|');
-    const err = await postJson('/access/revoke', { email, scope, key: rest.join('|') });
+    const err = await postJson('/access/revoke', { phone: email, scope, key: rest.join('|') });
     toast(err || 'Доступ закрыт');
     if (!err) { await loadAll(); $('#dlg').close(); render(); }
   }));
@@ -496,7 +502,7 @@ function openStudent(email) {
   // поверх старым снимком стирала бы их активность.
   $('#st-block').onclick = async () => {
     const err = await postJson('/users/flag',
-      { email, blocked: !u.blocked });
+      { phone: email, blocked: !u.blocked });
     toast(err || (!u.blocked ? 'Доступ заблокирован' : 'Доступ восстановлен'));
     await loadAll();
     $('#dlg').close(); render();
@@ -504,7 +510,7 @@ function openStudent(email) {
 
   $('#st-del').onclick = async () => {
     if (!confirm(`Удалить «${u.name}» из реестра? Аккаунт на устройстве останется.`)) return;
-    const err = await postJson('/users/delete', { email });
+    const err = await postJson('/users/delete', { phone: email });
     toast(err || 'Удалён из реестра');
     await loadAll();
     $('#dlg').close(); render();
@@ -516,19 +522,21 @@ function openStudent(email) {
 function viewAccess() {
   const live = state.access.filter((g) => !g.revoked);
   if (!live.length) return '<div class="card"><p class="muted">Доступы пока никому не выданы.</p></div>';
-  const nameOf = (e) => (state.users.find((u) => u.email === e) || {}).name || e;
+  const nameOf = (id) =>
+    (state.users.find((u) => identOf(u) === id) || {}).name || id;
   return `<div class="card"><h2>Выданные доступы (${live.length})</h2>
     <table><thead><tr><th>Ученик</th><th>Что открыто</th><th>Срок</th><th>Выдан</th><th></th></tr></thead><tbody>
     ${live.map((g) => {
       const expired = g.until != null && g.until <= Date.now();
       return `<tr>
-        <td>${esc(nameOf(g.email))}<br><span class="muted">${esc(g.email)}</span></td>
+        <td>${esc(nameOf(g.student ?? g.email))}<br>
+            <span class="muted">${esc(g.student ?? g.email)}</span></td>
         <td>${g.scope === 'direction' ? '📁' : '▶️'} ${esc(g.key)}</td>
         <td>${g.until == null ? '<span class="tag ok">бессрочно</span>'
               : expired ? `<span class="tag bad">истёк ${fmtDate(g.until)}</span>`
               : 'до ' + fmtDate(g.until)}</td>
         <td class="muted">${fmtDate(g.grantedAt)}</td>
-        <td><button class="danger" data-rv="${esc(g.email)}|${esc(g.scope)}|${esc(g.key)}">Закрыть</button></td>
+        <td><button class="danger" data-rv="${esc(g.student ?? g.email)}|${esc(g.scope)}|${esc(g.key)}">Закрыть</button></td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
 }
@@ -547,7 +555,7 @@ function viewCodes() {
         const valid = !c.used && !expired;
         return `<tr>
           <td><b>${esc(c.phone)}</b></td>
-          <td class="muted">${esc(c.email)}</td>
+          <td class="muted">${esc(c.name || '')}</td>
           <td style="font-size:20px;letter-spacing:2px">${valid ? esc(c.code) : '••••••'}</td>
           <td class="muted">${fmtDateTime(c.createdAt)}</td>
           <td>${c.used ? '<span class="tag ok">использован</span>'
@@ -778,14 +786,14 @@ function wire() {
     const draw = () => {
       $('#tbl').innerHTML = usersTable(q.value);
       $('#tbl').querySelectorAll('tr.row').forEach((tr) =>
-        (tr.onclick = () => openStudent(tr.dataset.email)));
+        (tr.onclick = () => openStudent(tr.dataset.id)));
     };
     q.oninput = draw;
     draw();
   }
   document.querySelectorAll('[data-rv]').forEach((b) => (b.onclick = async () => {
     const [email, scope, ...rest] = b.dataset.rv.split('|');
-    const err = await postJson('/access/revoke', { email, scope, key: rest.join('|') });
+    const err = await postJson('/access/revoke', { phone: email, scope, key: rest.join('|') });
     toast(err || 'Доступ закрыт');
     if (!err) { await loadAll(); render(); }
   }));

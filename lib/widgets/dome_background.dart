@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../services/wallpaper_service.dart';
 import '../theme.dart';
 
 /// Фон приложения: фотография Каабы и часовой башни Мекки с медленным
@@ -48,11 +50,28 @@ class _DomeBackgroundState extends State<DomeBackground>
               child: child,
             );
           },
-          child: Image.asset(
-            'assets/images/wallpaper.jpg',
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) =>
-                const ColoredBox(color: AppColors.skyBottom),
+          // Свои обои, если выбраны; иначе встроенное фото Каабы.
+          child: ListenableBuilder(
+            listenable: WallpaperService.instance,
+            builder: (context, _) {
+              final custom = WallpaperService.instance.path;
+              if (custom != null) {
+                return Image.file(
+                  File(custom),
+                  key: ValueKey(custom),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => Image.asset(
+                      'assets/images/wallpaper.jpg',
+                      fit: BoxFit.cover),
+                );
+              }
+              return Image.asset(
+                'assets/images/wallpaper.jpg',
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) =>
+                    const ColoredBox(color: AppColors.skyBottom),
+              );
+            },
           ),
         ),
         // Затемнение сверху (статус-бар) и снизу (контент).

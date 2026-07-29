@@ -20,6 +20,7 @@ import 'news_screen.dart';
 import 'quran_page.dart';
 import 'ramadan_screen.dart';
 import 'settings_screen.dart';
+import 'wallpaper_sheet.dart';
 
 const _hijriMonthsRu = [
   'Мухаррам', 'Сафар', 'Раби уль-авваль', 'Раби ус-сани',
@@ -50,7 +51,12 @@ class HomePage extends StatelessWidget {
         ? '${hijri.hDay}-$hijriMonth, ${hijri.hYear}'
         : '${hijri.hDay} $hijriMonth, ${hijri.hYear}';
 
-    return SafeArea(
+    return GestureDetector(
+      // Долгое нажатие по пустому месту меняет обои. behavior нужен, чтобы
+      // жест ловился и там, где под пальцем нет ни одного виджета.
+      behavior: HitTestBehavior.translucent,
+      onLongPress: () => showWallpaperSheet(context),
+      child: SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Column(
@@ -177,6 +183,7 @@ class HomePage extends StatelessWidget {
           ],
         ),
       ),
+      ),
     );
   }
 }
@@ -302,7 +309,17 @@ class _BottomBar extends StatelessWidget {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => ClipRRect(
+      // Лист тянется и прокручивается: пунктов больше, чем влезает в экран,
+      // и раньше нижние были просто не видны.
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.95,
+        snap: true,
+        snapSizes: const [0.7],
+        expand: false,
+        builder: (ctx, scrollController) => ClipRRect(
         borderRadius:
             const BorderRadius.vertical(top: Radius.circular(24)),
         child: BackdropFilter(
@@ -310,8 +327,9 @@ class _BottomBar extends StatelessWidget {
           child: Material(
             color: AppColors.skyBottom.withValues(alpha: 0.82),
             child: SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+              child: ListView(
+                controller: scrollController,
+                padding: EdgeInsets.zero,
                 children: [
                   const SizedBox(height: 12),
                   Container(
@@ -439,6 +457,7 @@ class _BottomBar extends StatelessWidget {
               ),
             ),
           ),
+        ),
         ),
       ),
     );

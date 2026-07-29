@@ -90,7 +90,7 @@ class ShopService {
   /// накручивались правкой SharedPreferences, а код можно было придумать.
   /// Теперь клиент только показывает результат; локальная история нужна лишь
   /// для экрана «Мои выкупы».
-  Future<RedeemResult> redeem(ShopItem item, String email) async {
+  Future<RedeemResult> redeem(ShopItem item, String phone) async {
     final Map<String, dynamic> j;
     final int status;
     try {
@@ -100,7 +100,7 @@ class ShopService {
             Uri.parse('$base/redeem'),
             headers: {'Content-Type': 'application/json; charset=utf-8'},
             body: utf8.encode(jsonEncode({
-              'email': email,
+              'phone': phone,
               'itemId': item.id,
             })),
           )
