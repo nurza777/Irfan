@@ -235,6 +235,10 @@ function dialog(html) {
 const state = {
   users: [], access: [], codes: [], catalog: [], pending: {},
   media: [], disk: {}, author: '',
+  // Публичный адрес сервера для ссылок на уроки. Панель могут открыть по
+  // защищённой ссылке Tailscale — складывать ссылку из адреса админа нельзя,
+  // иначе ученикам достанется адрес служебного канала.
+  mediaBase: '',
 };
 
 async function loadAll() {
@@ -255,6 +259,7 @@ async function loadAll() {
   state.author = courses?.author || '';
   state.media = media?.items || [];
   state.disk = media?.disk || {};
+  state.mediaBase = media?.mediaBase || API;
   state.pending = { courses: pc, news: pn, azkar: pa };
 }
 
@@ -589,7 +594,7 @@ function viewMedia() {
             ? m.usedIn.map((u) => `<div class="muted">${esc(u)}</div>`).join('')
             : '<span class="muted">нигде</span>'}</td>
       <td class="row-actions">
-        <button data-copy="${esc(m.url)}">Ссылка</button>
+        <button data-copy="${esc(m.publicUrl || state.mediaBase + m.url)}">Ссылка</button>
         <button class="danger" data-delmedia="${esc(m.name)}"
                 data-used="${m.usedIn.length}">Удалить</button>
       </td>
@@ -669,7 +674,7 @@ function viewCourses() {
 /// Диалог урока: название + ссылка, выбираемая из загруженных файлов.
 function lessonDialog(lesson, onSave) {
   const opts = state.media.map((m) =>
-    `<option value="${esc(API + m.url)}">${esc(m.name)} · ${fmtBytes(m.size)}</option>`).join('');
+    `<option value="${esc(m.publicUrl || state.mediaBase + m.url)}">${esc(m.name)} · ${fmtBytes(m.size)}</option>`).join('');
   dialog(`
     <h2 style="margin-top:0">${lesson ? 'Урок' : 'Новый урок'}</h2>
     <label>Название</label>
@@ -799,7 +804,7 @@ function wire() {
     };
   }
   document.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => {
-    const url = API + b.dataset.copy;
+    const url = b.dataset.copy;
     try { await navigator.clipboard.writeText(url); toast('Ссылка скопирована'); }
     catch { prompt('Скопируйте ссылку:', url); }
   }));

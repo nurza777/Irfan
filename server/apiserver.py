@@ -520,6 +520,15 @@ def _upsert_user(data):
 
 UPLOADS = os.path.join(ROOT, 'uploads')
 
+# Адрес, по которому уроки забирает ПРИЛОЖЕНИЕ СТУДЕНТА.
+#
+# Он не совпадает с тем, откуда зашёл администратор: панель открывают и по
+# защищённой ссылке Tailscale, и по прямому IP. Если складывать ссылку урока
+# из адреса админа, ученикам достанется ссылка на Funnel — а это канал
+# служебного доступа, не предназначенный для раздачи видео.
+MEDIA_BASE = os.environ.get(
+    'IRFAN_MEDIA_BASE', 'http://178.104.206.100:8090').rstrip('/')
+
 # Что разрешаем заливать. Расширение проверяем, потому что каталог раздаётся
 # всем: html/js оттуда исполнялись бы в браузере с нашего же адреса.
 MEDIA_EXT = ('.mp4', '.mov', '.m4v', '.mp3', '.m4a', '.aac', '.pdf',
@@ -580,6 +589,8 @@ def _media_list():
                 'size': st.st_size,
                 'mtime': int(st.st_mtime * 1000),
                 'url': f'/uploads/{name}',
+                # Абсолютная ссылка для каталога — всегда на публичный адрес.
+                'publicUrl': f'{MEDIA_BASE}/uploads/{name}',
             })
     except OSError:
         pass
@@ -603,7 +614,7 @@ def _media_list():
                         f"{l.get('title','')}")
     for it in items:
         it['usedIn'] = used.get(it['name'], [])
-    return {'items': items, 'disk': disk}
+    return {'items': items, 'disk': disk, 'mediaBase': MEDIA_BASE}
 
 
 def _delete_media(data):
