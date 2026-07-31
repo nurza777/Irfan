@@ -15,6 +15,7 @@ import 'services/shop_service.dart';
 import 'services/tracker_service.dart';
 import 'services/wallpaper_service.dart';
 import 'services/user_registry.dart';
+import 'services/watch_progress.dart';
 import 'services/zikr_service.dart';
 
 /// Глобальное состояние: локация, времена намаза на сегодня, трекер,
@@ -87,6 +88,7 @@ class AppState extends ChangeNotifier {
     privateZikrs = await PrivateZikrService.create();
     await HomeWidgetService.init();
     await WallpaperService.instance.init();
+    await WatchProgress.instance.init();
     _applyLocationSetting();
     _recompute();
     _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {

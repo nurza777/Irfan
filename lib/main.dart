@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,6 +10,9 @@ import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Все экраны свёрстаны под портрет; альбомная ориентация нужна ровно в
+  // одном месте — в полноэкранном плеере урока, и он включает её сам.
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   await initializeDateFormatting('ru');
   final prefs = await SharedPreferences.getInstance();
   final onboardingDone = prefs.getBool('onboarding_done') ?? false;

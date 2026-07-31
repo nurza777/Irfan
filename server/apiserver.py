@@ -12,10 +12,13 @@ POST /comments   — чат эфира от студентов (без паро�
 POST /users      — студент сообщает профиль/активность (без пароля);
 POST /redeem     — обмен коинов на награду: баланс и код выдаёт СЕРВЕР;
 POST /verify/request, /verify/confirm — подтверждение телефона кодом;
+POST /teachers   — устаз заводит себя в реестре (статус pending);
+POST /teachers/flag, /teachers/delete (admin) — модерация устазов;
 POST /access/grant, /access/revoke (admin) — доступ к направлению/курсу
                    на срок в днях или бессрочно.
 """
 import base64
+import hashlib
 import http.server
 import json
 import os
@@ -32,6 +35,7 @@ COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
 ACCESS = os.path.join(ROOT, 'access.json')
+TEACHERS = os.path.join(ROOT, 'teachers.json')
 # Каталог версий — СОСЕДНИЙ с api/, а не внутри: всё, что лежит в ROOT,
 # раздаётся по HTTP, и копия users.json стала бы публичной.
 VERSIONS = os.path.join(os.path.dirname(ROOT), 'versions')
@@ -39,10 +43,11 @@ VERIFY = os.path.join(ROOT, 'verifications.json')
 _MAX_COMMENTS = 200
 _MAX_USERS = 10000
 _MAX_REDEMPTIONS = 20000
+_MAX_TEACHERS = 500
 
 # Пути с ПДн — GET только для админа.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
-                  '/verifications.json', '/media.json')
+                  '/verifications.json', '/media.json', '/pending.json')
 # Хеш пароля админа: не ПДн, но и не для публики — брутфорсится офлайн.
 # Достаточно любой роли: приложение устаза читает его до входа админом.
 _AUTHED_GET = ('/admin.json',)
@@ -51,6 +56,9 @@ _AUTHED_GET = ('/admin.json',)
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
                    '/azkar_pending.json')
 _USTAZ_WRITABLE_PREFIX = ('/uploads/',)
+# Заявка на каталог — у каждого устаза своя: с общим courses_pending.json
+# двое публикующих затирали бы работу друг друга.
+_PENDING_RE = re.compile(r'^/courses_pending_[0-9a-f]{6,32}\.json$')
 
 # Каталог наград — источник истины для стоимости (клиенту не доверяем).
 SHOP_ITEMS = {
@@ -136,18 +144,20 @@ def _role(headers):
 _PUT_ALLOWED = ('/courses.json', '/news.json', '/azkar.json',
                 '/courses_pending.json', '/news_pending.json',
                 '/azkar_pending.json', '/users.json', '/admin.json',
-                '/status.json', '/live-title.txt')
+                '/status.json', '/live-title.txt', '/teachers.json')
 
 
 def _put_allowed(path):
     p = path.split('?')[0]
-    return p in _PUT_ALLOWED or p.startswith('/uploads/')
+    return (p in _PUT_ALLOWED or p.startswith('/uploads/')
+            or bool(_PENDING_RE.match(p)))
 
 
 def _put_role_for(path):
     """Какая роль нужна, чтобы писать в этот путь."""
     p = path.split('?')[0]
-    if p in _USTAZ_WRITABLE or p.startswith(_USTAZ_WRITABLE_PREFIX):
+    if (p in _USTAZ_WRITABLE or p.startswith(_USTAZ_WRITABLE_PREFIX)
+            or _PENDING_RE.match(p)):
         return 'ustaz'      # устазу можно; админу — тоже (он выше по правам)
     return 'admin'          # всё остальное, включая live-файлы, — только админ
 
@@ -457,6 +467,138 @@ def _confirm_code(data):
             rec['verified'] = True
             _save_users(users)
     return 200, {'verified': True}
+
+
+# ── Устазы ───────────────────────────────────────────────────────────────
+#
+# Приложение студента показывает список устазов и уроки выбранного. Устаз
+# заводится сам из своего приложения и до одобрения админом студентам не
+# виден — это та же модерация, что и у курсов, только на уровне человека.
+
+
+def _teacher_id(ident):
+    """Опознаватель устаза — хеш его логина (почты или номера).
+
+    teachers.json читает приложение студента, то есть файл публичный. Класть
+    туда почту или номер нельзя, а связывать заявки с автором чем-то надо —
+    берём необратимый хеш: устаз считает его у себя тем же способом и
+    попадает в свою же запись.
+    """
+    p = _norm_phone(ident) or str(ident or '').strip().lower()
+    if not p:
+        return ''
+    return hashlib.sha256(('irfan-ustaz:' + p).encode()).hexdigest()[:16]
+
+
+def _load_teachers():
+    v = _read_json(TEACHERS, {})
+    items = v.get('teachers') if isinstance(v, dict) else v
+    return [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
+
+
+def _save_teachers(items):
+    _keep_backup(TEACHERS)
+    with open(TEACHERS, 'w', encoding='utf-8') as f:
+        json.dump({'updated': int(time.time() * 1000), 'teachers': items},
+                  f, ensure_ascii=False)
+
+
+def _find_teacher(items, tid):
+    return next((t for t in items if t.get('id') == tid), None)
+
+
+def _upsert_teacher(data):
+    """Устаз сообщает о себе: имя и описание. Новый — со статусом pending."""
+    tid = _teacher_id(data.get('login') or data.get('phone'))
+    if not tid:
+        return None
+    name = (data.get('name') or '').strip()[:60] or 'Устаз'
+    bio = (data.get('bio') or '').strip()[:300]
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_teachers()
+        rec = _find_teacher(items, tid)
+        if rec is None:
+            if len(items) >= _MAX_TEACHERS:
+                return {'error': 'registry full'}
+            rec = {'id': tid, 'status': 'pending', 'registeredAt': now}
+            items.append(rec)
+        rec['name'] = name
+        if bio:
+            rec['bio'] = bio
+        rec['lastSeen'] = now
+        _save_teachers(items)
+        return dict(rec)
+
+
+def _set_teacher_status(data):
+    """Модерация устаза. approved — виден студентам, остальное — нет."""
+    tid = str(data.get('id') or '').strip()
+    status = data.get('status')
+    if status not in ('approved', 'pending', 'blocked'):
+        return 400, {'error': 'bad status'}
+    with _lock:
+        items = _load_teachers()
+        rec = _find_teacher(items, tid)
+        if rec is None:
+            return 404, {'error': 'no teacher'}
+        rec['status'] = status
+        rec['moderatedAt'] = int(time.time() * 1000)
+        _save_teachers(items)
+        return 200, dict(rec)
+
+
+def _delete_teacher(data):
+    """Удаляет устаза из реестра вместе с его неразобранной заявкой.
+
+    Опубликованные уроки не трогаем: они лежат в live courses.json, и решение
+    убрать их оттуда — отдельное действие админа в разделе курсов.
+    """
+    tid = str(data.get('id') or '').strip()
+    if not _PENDING_RE.match(f'/courses_pending_{tid}.json'):
+        return 400, {'error': 'bad id'}
+    with _lock:
+        items = _load_teachers()
+        rest = [t for t in items if t.get('id') != tid]
+        if len(rest) == len(items):
+            return 404, {'error': 'no teacher'}
+        _save_teachers(rest)
+    try:
+        os.remove(os.path.join(ROOT, f'courses_pending_{tid}.json'))
+    except OSError:
+        pass
+    return 200, {'deleted': tid}
+
+
+def _pending_list():
+    """Неразобранные заявки на каталог — по файлу на устаза."""
+    names = {t.get('id'): t.get('name') for t in _load_teachers()}
+    out = []
+    try:
+        files = sorted(os.listdir(ROOT))
+    except OSError:
+        files = []
+    for fn in files:
+        if not (fn.startswith('courses_pending_') and fn.endswith('.json')):
+            continue
+        tid = fn[len('courses_pending_'):-len('.json')]
+        data = _read_json(os.path.join(ROOT, fn), {})
+        if not isinstance(data, dict):
+            continue
+        dirs = data.get('directions')
+        out.append({
+            'teacherId': tid,
+            'teacherName': names.get(tid) or data.get('author') or '',
+            'status': data.get('status') or 'pending',
+            'updated': data.get('updated') or '',
+            'author': data.get('author') or '',
+            'directions': len(dirs) if isinstance(dirs, list) else 0,
+            'lessons': sum(len(c.get('lessons') or [])
+                           for d in (dirs or []) if isinstance(d, dict)
+                           for c in (d.get('courses') or [])
+                           if isinstance(c, dict)),
+        })
+    return {'pending': out}
 
 
 def _upsert_user(data):
@@ -1004,13 +1146,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == '/media.json':
             self._send_json(200, _media_list())
             return
+        if p == '/pending.json':
+            self._send_json(200, _pending_list())
+            return
         if self._serve_range():
             return
         return super().do_GET()
 
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
-                  '/redeem')
+                  '/redeem', '/teachers')
 
     def do_POST(self):
         p = self.path.rstrip('/')
@@ -1040,6 +1185,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(507, rec)
                 return
             self._send_json(201, rec)
+            return
+        if p == '/teachers':
+            rec = _upsert_teacher(data)
+            if rec is None:
+                self._send_json(400, {'error': 'bad phone'})
+                return
+            if rec.get('error'):
+                self._send_json(507, rec)
+                return
+            self._send_json(201, rec)
+            return
+        if p in ('/teachers/flag', '/teachers/delete'):
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            code, body = (_set_teacher_status(data) if p == '/teachers/flag'
+                          else _delete_teacher(data))
+            self._send_json(code, body)
             return
         if p == '/redeem':
             code, body = _redeem(data)

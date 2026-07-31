@@ -5,11 +5,84 @@ import 'package:http/http.dart' as http;
 import 'api_config.dart';
 import 'url_safety.dart';
 
-/// Каталог: устаз → направления → курсы → уроки.
+/// Каталог: устазы → направления → курсы → уроки.
+///
+/// Раньше каталог принадлежал одному устазу (`{author, directions}`). Теперь
+/// устазов несколько, и каждый занимает свой блок в `teachers`. Старый вид
+/// продолжаем читать — иначе после обновления сервера ученики остались бы без
+/// уроков, пока устаз не опубликует каталог заново.
 class Catalog {
-  final String author;
+  final List<TeacherCourses> teachers;
+  const Catalog({required this.teachers});
+
+  factory Catalog.fromJson(Map<String, dynamic> j) {
+    final raw = j['teachers'];
+    final out = <TeacherCourses>[
+      if (raw is List)
+        ...raw
+            .whereType<Map>()
+            .map((e) => TeacherCourses.fromJson(Map<String, dynamic>.from(e)))
+            .where((t) => t.id.isNotEmpty),
+    ];
+    // Блок прежнего вида (author + directions на верхнем уровне) добавляем
+    // РЯДОМ с новыми, а не вместо них: в переходное время в файле лежит и то
+    // и другое, и его владелец не должен пропасть из списка, пока сам не
+    // опубликует каталог заново.
+    final dirs = (j['directions'] as List?) ?? const [];
+    if (dirs.isNotEmpty) {
+      out.add(TeacherCourses(
+        id: legacyTeacherId,
+        name: j['author'] as String? ?? '',
+        bio: '',
+        directions: dirs
+            .whereType<Map>()
+            .map((e) => RemoteDirection.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+      ));
+    }
+    return Catalog(teachers: out);
+  }
+
+  /// Опознаватель устаза из каталога прежнего вида, у которого id не было.
+  static const legacyTeacherId = 'legacy';
+
+  TeacherCourses? byId(String id) {
+    for (final t in teachers) {
+      if (t.id == id) return t;
+    }
+    return null;
+  }
+}
+
+/// Уроки одного устаза.
+class TeacherCourses {
+  final String id;
+  final String name;
+  final String bio;
   final List<RemoteDirection> directions;
-  const Catalog({required this.author, required this.directions});
+
+  const TeacherCourses({
+    required this.id,
+    required this.name,
+    required this.bio,
+    required this.directions,
+  });
+
+  factory TeacherCourses.fromJson(Map<String, dynamic> j) => TeacherCourses(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? j['author'] as String? ?? '',
+        bio: j['bio'] as String? ?? '',
+        directions: ((j['directions'] as List?) ?? [])
+            .whereType<Map>()
+            .map((e) => RemoteDirection.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+      );
+
+  int get courseCount =>
+      directions.fold(0, (sum, d) => sum + d.courses.length);
+
+  int get lessonCount => directions.fold(
+      0, (sum, d) => sum + d.courses.fold(0, (s, c) => s + c.lessons.length));
 }
 
 class RemoteDirection {
@@ -77,13 +150,7 @@ class CoursesService {
       if (r.statusCode != 200) return null;
       final j =
           Map<String, dynamic>.from(jsonDecode(utf8.decode(r.bodyBytes)));
-      return Catalog(
-        author: j['author'] as String? ?? '',
-        directions: ((j['directions'] as List?) ?? [])
-            .map((e) =>
-                RemoteDirection.fromJson(Map<String, dynamic>.from(e)))
-            .toList(),
-      );
+      return Catalog.fromJson(j);
     } catch (_) {
       return null;
     }

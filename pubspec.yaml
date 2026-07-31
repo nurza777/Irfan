@@ -44,6 +44,9 @@ dependencies:
   crypto: ^3.0.7
   http: ^1.6.0
   video_player: ^2.13.0
+  # Экран не должен гаснуть посреди урока: для системы «человек смотрит и
+  # не касается экрана» неотличимо от бездействия.
+  wakelock_plus: ^1.2.10
   url_launcher: ^6.3.2
   flutter_compass: ^0.8.1
   audioplayers: ^6.8.1

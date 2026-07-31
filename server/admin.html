@@ -254,24 +254,45 @@ const state = {
   // защищённой ссылке Tailscale — складывать ссылку из адреса админа нельзя,
   // иначе ученикам достанется адрес служебного канала.
   mediaBase: '',
+  // Устазы: реестр и заявки на каталог (у каждого своя).
+  teachers: [],
+  coursesRaw: {},
+  teacherId: '',
+  pendingCourses: [],
 };
 
 async function loadAll() {
-  const [users, access, codes, courses, media, pc, pn, pa] = await Promise.all([
-    getJson('/users.json', []),
-    getJson('/access.json', []),
-    getJson('/verifications.json', []),
-    getJson('/courses.json', { directions: [] }),
-    getJson('/media.json', { items: [], disk: {} }),
-    getJson('/courses_pending.json', null),
-    getJson('/news_pending.json', null),
-    getJson('/azkar_pending.json', null),
-  ]);
+  const [users, access, codes, courses, media, teachers, queue, pn, pa] =
+    await Promise.all([
+      getJson('/users.json', []),
+      getJson('/access.json', []),
+      getJson('/verifications.json', []),
+      getJson('/courses.json', { directions: [] }),
+      getJson('/media.json', { items: [], disk: {} }),
+      getJson('/teachers.json', { teachers: [] }),
+      getJson('/pending.json', { pending: [] }),
+      getJson('/news_pending.json', null),
+      getJson('/azkar_pending.json', null),
+    ]);
+  state.teachers = teachers?.teachers || [];
+  state.coursesRaw = courses || {};
+  // Полные заявки — по файлу на устаза; список выше даёт только сводку.
+  state.pendingCourses = (await Promise.all(
+    (queue?.pending || []).map((s) =>
+      getJson(`/courses_pending_${s.teacherId}.json`, null)
+        .then((p) => (p ? { ...p, teacherId: s.teacherId } : null))),
+  )).filter(Boolean);
   state.users = Array.isArray(users) ? users : [];
   state.access = Array.isArray(access) ? access : [];
   state.codes = (Array.isArray(codes) ? codes : []).slice().reverse();
-  state.catalog = courses?.directions || [];
-  state.author = courses?.author || '';
+  // Выбранный устаз: сохраняем прежний, если он ещё есть.
+  const blocks = teacherBlocks();
+  if (!blocks.some((b) => b.id === state.teacherId)) {
+    state.teacherId = blocks.length ? blocks[0].id : '';
+  }
+  const cur = blocks.find((b) => b.id === state.teacherId);
+  state.catalog = cur ? (cur.directions || []) : [];
+  state.author = cur ? (cur.name || '') : '';
   state.media = media?.items || [];
   state.mediaFolders = media?.folders || [];
   state.disk = media?.disk || {};
@@ -281,8 +302,35 @@ async function loadAll() {
     state.mediaFolder = '*';
   }
   state.mediaBase = media?.mediaBase || API;
-  state.pending = { courses: pc, news: pn, azkar: pa };
+  state.pending = { news: pn, azkar: pa };
 }
+
+/// Блоки каталога: по одному на устаза. Каталог прежнего вида (author +
+/// directions на верхнем уровне) показываем как блок «legacy» — иначе уроки,
+/// опубликованные до появления реестра, пропали бы из редактора.
+function teacherBlocks() {
+  const raw = state.coursesRaw || {};
+  const blocks = Array.isArray(raw.teachers)
+    ? raw.teachers.map((b) => ({ ...b }))
+    : [];
+  if (Array.isArray(raw.directions) && raw.directions.length) {
+    blocks.push({
+      id: 'legacy',
+      name: raw.author || 'Устаз',
+      directions: raw.directions,
+    });
+  }
+  // Одобренные устазы без уроков тоже нужны: им как раз и надо что-то завести.
+  for (const t of state.teachers) {
+    if (t.status === 'approved' && !blocks.some((b) => b.id === t.id)) {
+      blocks.push({ id: t.id, name: t.name || 'Устаз', directions: [] });
+    }
+  }
+  return blocks;
+}
+
+const teacherName = (id) =>
+  (teacherBlocks().find((b) => b.id === id) || {}).name || 'Устаз';
 
 /// Опознаватель студента — номер телефона. Поле email встречается только
 /// у записей, заведённых до перехода на номера.
@@ -296,6 +344,7 @@ const activeGrants = (id) => state.access.filter((g) =>
 const TABS = [
   ['stats', 'Статистика', viewStats],
   ['users', 'Ученики', viewUsers],
+  ['teachers', 'Устазы', viewTeachers],
   ['courses', 'Курсы', viewCourses],
   ['media', 'Видео', viewMedia],
   ['access', 'Доступы', viewAccess],
@@ -763,11 +812,22 @@ async function doUpload(files) {
 // — Каталог курсов
 
 function viewCourses() {
+  const blocks = teacherBlocks();
+  const picker = blocks.length
+    ? `<label style="display:block;margin-top:10px">Устаз
+         <select id="teacher-pick" style="margin-left:8px">
+           ${blocks.map((b) => `<option value="${esc(b.id)}"${
+             b.id === state.teacherId ? ' selected' : ''
+           }>${esc(b.name)} — ${(b.directions || []).length} направлен.</option>`).join('')}
+         </select>
+       </label>`
+    : '<p class="muted">Ни одного устаза ещё нет — они появляются после регистрации в своём приложении.</p>';
   return `
   <div class="card">
     <h2>Каталог курсов</h2>
-    <p class="muted">Направление → курс → урок. Ученик увидит здесь то, к чему
-      вы открыли ему доступ.</p>
+    <p class="muted">Направление → курс → урок. У каждого устаза свой каталог:
+      правки и публикация касаются только выбранного.</p>
+    ${picker}
     <div class="row-actions" style="margin-top:12px">
       <button id="add-dir">Добавить направление</button>
       <button class="primary" id="save-catalog">Опубликовать студентам</button>
@@ -843,30 +903,94 @@ function lessonDialog(lesson, onSave) {
   };
 }
 
+// Пишем блок ОДНОГО устаза, остальные оставляем как есть: раньше файл
+// переписывался целиком, и со вторым устазом это стёрло бы уроки первого.
+function catalogWith(teacherId, directions, name) {
+  const raw = state.coursesRaw || {};
+  const blocks = Array.isArray(raw.teachers)
+    ? raw.teachers.map((b) => ({ ...b }))
+    : [];
+  const i = blocks.findIndex((b) => b.id === teacherId);
+  const block = { id: teacherId, name: name || teacherName(teacherId),
+                  directions: directions || [] };
+  if (i >= 0) blocks[i] = { ...blocks[i], ...block };
+  else blocks.push(block);
+  const out = { updated: new Date().toISOString(), teachers: blocks };
+  // Старый общий блок оставляем, пока правят не его: он принадлежит устазу,
+  // который ещё не публиковался по-новому.
+  if (Array.isArray(raw.directions) && raw.directions.length
+      && teacherId !== 'legacy') {
+    out.author = raw.author;
+    out.directions = raw.directions;
+  }
+  return out;
+}
+
 async function saveCatalog() {
-  const err = await putJson('/courses.json', {
-    updated: new Date().toISOString(),
-    author: state.author || 'Устаз',
-    directions: state.catalog,
-  });
+  if (!state.teacherId) return toast('Сначала выберите устаза');
+  const err = await putJson('/courses.json',
+    catalogWith(state.teacherId, state.catalog, state.author));
   toast(err || 'Каталог опубликован студентам');
   if (!err) { await loadAll(); render(); }
+}
+
+// — Устазы
+
+/// Реестр устазов: одобренных видят ученики, остальных — нет.
+function viewTeachers() {
+  const list = state.teachers;
+  const waiting = list.filter((t) => t.status !== 'approved'
+                                     && t.status !== 'blocked').length;
+  const rows = list.map((t) => {
+    const st = t.status === 'approved'
+      ? '<span class="tag ok">виден ученикам</span>'
+      : t.status === 'blocked'
+        ? '<span class="tag bad">скрыт</span>'
+        : '<span class="tag warn">на проверке</span>';
+    const lessons = (teacherBlocks().find((b) => b.id === t.id) || {}).directions;
+    return `<div class="card">
+      <div style="display:flex;align-items:center;gap:10px">
+        <h2 style="margin:0;flex:1">${esc(t.name || 'Без имени')} ${st}</h2>
+      </div>
+      ${t.bio ? `<p class="muted">${esc(t.bio)}</p>` : ''}
+      <p class="muted">Направлений в каталоге: ${(lessons || []).length}
+        · заведён ${fmtDateTime(t.registeredAt || 0)}</p>
+      <div class="row-actions" style="margin-top:8px">
+        ${t.status !== 'approved'
+          ? `<button class="primary" data-tstatus="${esc(t.id)}|approved">Одобрить</button>` : ''}
+        ${t.status !== 'blocked'
+          ? `<button data-tstatus="${esc(t.id)}|blocked">Скрыть</button>` : ''}
+        <button class="danger" data-tdel="${esc(t.id)}">Удалить</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="card">
+      <h2>Устазы</h2>
+      <p class="muted">Устаз заводится сам, войдя в своё приложение. Пока вы
+        не одобрили его, ученики в разделе «Курсы» его не видят.</p>
+      <p>Всего: ${list.length} · на проверке: ${waiting}</p>
+    </div>${rows || '<div class="card"><p class="muted">Реестр пуст.</p></div>'}`;
 }
 
 // — Модерация
 
 function viewModeration() {
+  const courseCards = state.pendingCourses.length
+    ? state.pendingCourses.map((p) => moderationCard(
+        'courses', `Курсы — ${esc(p.author || teacherName(p.teacherId))}`, p,
+        (x) => `${(x.directions || []).length} направлен., ` +
+               `${(x.directions || []).reduce((s, d) => s + (d.courses || []).length, 0)} курс(ов)`,
+        p.teacherId)).join('')
+    : '<div class="card"><h2>Курсы</h2><p class="muted">Заявок нет.</p></div>';
+
   const blocks = [
-    ['courses', 'Курсы', state.pending.courses, 'courses.json',
-      (p) => `${(p.directions || []).length} направлен., ` +
-             `${(p.directions || []).reduce((s, d) => s + (d.courses || []).length, 0)} курс(ов)`],
     ['news', 'Новости', state.pending.news, 'news.json',
       (p) => `${(p.items || []).length} новост(ей)`],
     ['azkar', 'Азкары', state.pending.azkar, 'azkar.json',
       (p) => `${(p.categories || []).length} категор., ` +
              `${(p.categories || []).reduce((s, c) => s + (c.items || []).length, 0)} зикр(ов)`],
   ];
-  return blocks.map(([id, title, p, , summary]) => {
+  return courseCards + blocks.map(([id, title, p, , summary]) => {
     if (!p) return `<div class="card"><h2>${title}</h2><p class="muted">Заявок нет.</p></div>`;
     const st = p.status || 'none';
     const tag = st === 'pending' ? '<span class="tag warn">на модерации</span>'
@@ -885,12 +1009,31 @@ function viewModeration() {
   }).join('');
 }
 
+/// Карточка одной заявки. [who] — id устаза, если заявка на каталог.
+function moderationCard(kind, title, p, summary, who) {
+  const st = p.status || 'none';
+  const tag = st === 'pending' ? '<span class="tag warn">на модерации</span>'
+    : st === 'approved' ? '<span class="tag ok">одобрено</span>'
+    : st === 'rejected' ? '<span class="tag bad">отклонено</span>' : '';
+  return `<div class="card">
+    <h2>${title} ${tag}</h2>
+    <p class="muted">Автор: ${esc(p.author || '—')} · ${fmtDateTime(Date.parse(p.submittedAt) || 0)}</p>
+    <p>${esc(summary(p))}</p>
+    ${(p.directions || []).map((d) => `<p class="muted">• ${esc(d.title)} (${(d.courses || []).length})</p>`).join('')}
+    ${p.reason ? `<p class="muted">Причина отказа: ${esc(p.reason)}</p>` : ''}
+    ${st === 'pending' ? `<div class="row-actions" style="margin-top:10px">
+      <button class="primary" data-approve="${kind}" data-who="${esc(who || '')}">Одобрить и опубликовать</button>
+      <button class="danger" data-reject="${kind}" data-who="${esc(who || '')}">Отклонить</button>
+    </div>` : ''}
+  </div>`;
+}
+
 // Одобрение = публикация в live + пометка заявки. Так же, как в приложении.
-async function approve(kind) {
+async function approve(kind, who) {
+  if (kind === 'courses') return approveCourses(who);
   const p = state.pending[kind];
-  const live = { courses: 'courses.json', news: 'news.json', azkar: 'azkar.json' }[kind];
+  const live = { news: 'news.json', azkar: 'azkar.json' }[kind];
   const payload = { updated: new Date().toISOString(), author: p.author };
-  if (kind === 'courses') payload.directions = p.directions || [];
   if (kind === 'news') payload.items = p.items || [];
   if (kind === 'azkar') payload.categories = p.categories || [];
 
@@ -903,11 +1046,34 @@ async function approve(kind) {
   if (!err) { await loadAll(); render(); }
 }
 
-async function reject(kind) {
+/// Одобрение каталога: уроки уходят в блок этого устаза, а сам он становится
+/// виден ученикам — иначе уроки лежали бы в каталоге, а автора не было бы
+/// в списке, и открыть их стало бы неоткуда.
+async function approveCourses(who) {
+  const p = state.pendingCourses.find((x) => x.teacherId === who);
+  if (!p) return toast('Заявка не найдена');
+  let err = await putJson('/courses.json',
+    catalogWith(who, p.directions || [], p.author));
+  if (!err) err = await postJson('/teachers/flag', { id: who, status: 'approved' });
+  if (!err) {
+    err = await putJson(`/courses_pending_${who}.json`,
+      { ...p, status: 'approved', reviewedAt: new Date().toISOString() });
+  }
+  toast(err || 'Опубликовано ученикам');
+  if (!err) { await loadAll(); render(); }
+}
+
+async function reject(kind, who) {
   const reason = prompt('Причина отказа (увидит устаз):', '');
   if (reason === null) return;
-  const p = state.pending[kind];
-  const err = await putJson('/' + kind + '_pending.json',
+  const p = kind === 'courses'
+    ? state.pendingCourses.find((x) => x.teacherId === who)
+    : state.pending[kind];
+  if (!p) return toast('Заявка не найдена');
+  const path = kind === 'courses'
+    ? `/courses_pending_${who}.json`
+    : `/${kind}_pending.json`;
+  const err = await putJson(path,
     { ...p, status: 'rejected', reason, reviewedAt: new Date().toISOString() });
   toast(err || 'Заявка отклонена');
   if (!err) { await loadAll(); render(); }
@@ -1123,9 +1289,36 @@ function wire() {
   }));
 
   document.querySelectorAll('[data-approve]').forEach((b) =>
-    (b.onclick = () => approve(b.dataset.approve)));
+    (b.onclick = () => approve(b.dataset.approve, b.dataset.who)));
   document.querySelectorAll('[data-reject]').forEach((b) =>
-    (b.onclick = () => reject(b.dataset.reject)));
+    (b.onclick = () => reject(b.dataset.reject, b.dataset.who)));
+
+  const pick = $('#teacher-pick');
+  if (pick) {
+    pick.onchange = () => {
+      const b = teacherBlocks().find((x) => x.id === pick.value);
+      state.teacherId = pick.value;
+      state.catalog = b ? (b.directions || []) : [];
+      state.author = b ? (b.name || '') : '';
+      render();
+    };
+  }
+  document.querySelectorAll('[data-tstatus]').forEach((b) =>
+    (b.onclick = async () => {
+      const [id, status] = b.dataset.tstatus.split('|');
+      const err = await postJson('/teachers/flag', { id, status });
+      toast(err || (status === 'approved' ? 'Устаз виден ученикам'
+                                          : 'Устаз скрыт от учеников'));
+      if (!err) { await loadAll(); render(); }
+    }));
+  document.querySelectorAll('[data-tdel]').forEach((b) =>
+    (b.onclick = async () => {
+      if (!confirm('Удалить устаза из реестра? Уже опубликованные уроки '
+                   + 'останутся в каталоге.')) return;
+      const err = await postJson('/teachers/delete', { id: b.dataset.tdel });
+      toast(err || 'Устаз удалён из реестра');
+      if (!err) { await loadAll(); render(); }
+    }));
 }
 
 // ——— Вход и запуск ——————————————————————————————————————————————
