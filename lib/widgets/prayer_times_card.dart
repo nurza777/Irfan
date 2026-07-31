@@ -31,81 +31,108 @@ class PrayerTimesCard extends StatelessWidget {
 
     return GlassCard(
       radius: 22,
+      padding: EdgeInsets.zero,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           for (final k in PrayerKey.values)
-            Padding(
+            // Идущий сейчас намаз — мягкая зелёная подложка на всю строку.
+            // Раньше белой пилюлей подсвечивалось только время: пятно било
+            // по глазам и не связывалось с названием слева.
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeOut,
+              margin: const EdgeInsets.symmetric(horizontal: 10),
               padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: k == current
+                    ? AppColors.success.withValues(alpha: 0.20)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: Row(
                 children: [
+                  if (k == current) ...[
+                    const PulsingDot(color: AppColors.goldLight, size: 7),
+                    const SizedBox(width: 8),
+                  ],
                   Expanded(
                     child: Text(
                       t(k.titleRu),
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight:
+                              k == current ? FontWeight.w700 : FontWeight.w500,
+                          color: k.isPrayer
+                              ? Colors.white
+                              : AppColors.textSoft),
                     ),
                   ),
-                  if (k.isPrayer)
-                    _NotifyToggle(prayer: k),
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 350),
-                    curve: Curves.easeOut,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
+                  if (k.isPrayer) _NotifyToggle(prayer: k),
+                  Text(
+                    hhmm.format(times[k]),
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight:
+                          k == current ? FontWeight.w700 : FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
                       color: k == current
-                          ? Colors.white.withValues(alpha: 0.92)
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 350),
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w600,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                        color: k == current ? Colors.black87 : Colors.white,
-                      ),
-                      child: Text(hhmm.format(times[k])),
+                          ? AppColors.goldLight
+                          : (k.isPrayer ? Colors.white : AppColors.textSoft),
                     ),
                   ),
                 ],
               ),
             ),
           const SizedBox(height: 10),
-          // Полоса обратного отсчёта до следующего намаза.
-          DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [AppColors.domeGreen, AppColors.accentGreen],
+          // Обратный отсчёт до следующего намаза — часть карточки, а не
+          // приклеенная снизу плашка: углы скруглены под её радиус, иначе
+          // на стыке торчали прямые края.
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(21)),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    AppColors.domeDark.withValues(alpha: 0.85),
+                    AppColors.accentGreen.withValues(alpha: 0.75),
+                  ],
+                ),
               ),
-            ),
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              child: Row(
-                children: [
-                  const PulsingDot(color: AppColors.goldLight),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      t(nextKey.titleRu),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 13),
+                child: Row(
+                  children: [
+                    Text(
+                      t('Следующий'),
                       style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w600),
+                          fontSize: 12,
+                          letterSpacing: 0.6,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSoft),
                     ),
-                  ),
-                  Text(
-                    countdown(),
-                    style: const TextStyle(
-                      fontSize: 19,
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        t(nextKey.titleRu),
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w700),
+                      ),
                     ),
-                  ),
-                ],
+                    Text(
+                      countdown(),
+                      style: const TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                        color: AppColors.cream,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

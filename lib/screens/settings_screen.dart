@@ -387,29 +387,11 @@ class _NotificationsCardState extends State<_NotificationsCard> {
     );
   }
 
-  Widget _chip(String text, bool active, VoidCallback onTap) {
-    return PressableScale(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: active
-              ? AppColors.accentGreen.withValues(alpha: 0.28)
-              : Colors.black.withValues(alpha: 0.25),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: active
-                  ? AppColors.accentGreen
-                  : Colors.white.withValues(alpha: 0.15)),
-        ),
-        child: Text(text,
-            style: TextStyle(
-                fontSize: 14,
-                fontWeight: active ? FontWeight.w700 : FontWeight.w500)),
-      ),
-    );
-  }
+  /// Выбор здесь показывается тем же золотом, что и язык с локацией выше.
+  /// Раньше эти пилюли были зелёными, и на одном экране жили два разных
+  /// «выбрано».
+  Widget _chip(String text, bool active, VoidCallback onTap) =>
+      SelectPill(label: text, selected: active, onTap: onTap, dense: true);
 }
 
 class _SectionTitle extends StatelessWidget {

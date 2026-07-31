@@ -113,7 +113,9 @@ class HomePage extends StatelessWidget {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.monetization_on,
+                              // Не доллар: коины — внутренние баллы, а
+                              // значок валюты сбивал с толку.
+                              const Icon(Icons.toll,
                                   color: AppColors.goldLight, size: 20),
                               const SizedBox(width: 6),
                               Text('${state.coins}',
@@ -161,17 +163,19 @@ class HomePage extends StatelessWidget {
                 ],
               ),
             ),
-            const Spacer(flex: 3),
+            // Пропорция 2:3 вместо 3:4: сверху остаётся воздух с минаретом,
+            // но карточка перестаёт висеть в середине пустого экрана.
+            const Spacer(flex: 2),
             const FadeSlideIn(
               delay: Duration(milliseconds: 140),
               child: PrayerTimesCard(),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             const FadeSlideIn(
               delay: Duration(milliseconds: 280),
               child: _TrackerQuestionBanner(),
             ),
-            const Spacer(flex: 4),
+            const Spacer(flex: 3),
             FadeSlideIn(
               delay: const Duration(milliseconds: 400),
               child: _BottomBar(
@@ -251,6 +255,61 @@ class _TrackerQuestionBanner extends StatelessWidget {
 }
 
 /// Нижняя панель: Трекер намаза · «···» (зикры, курсы и др.) · КОРАН.
+/// Кнопка нижнего ряда: иконка и подпись, одинаковая ширина у всех трёх.
+/// [accent] — золотая рамка у главного действия (Коран).
+class _BarButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool accent;
+
+  const _BarButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.accent = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PressableScale(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: accent ? 0.30 : 0.24),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                  color: accent
+                      ? AppColors.gold
+                      : Colors.white.withValues(alpha: 0.20),
+                  width: accent ? 1.3 : 1),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon,
+                    size: 22,
+                    color: accent ? AppColors.goldLight : Colors.white),
+                const SizedBox(height: 4),
+                Text(label,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: accent ? AppColors.cream : AppColors.textSoft)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BottomBar extends StatelessWidget {
   final VoidCallback onOpenTracker;
   final VoidCallback onOpenZikr;
@@ -262,43 +321,34 @@ class _BottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Три равные кнопки с подписями вместо круг-круг-пилюля: раньше формы
+    // и размеры были разные, а «КОРАН» кричал капсом на фоне безымянных
+    // иконок — по виду не читалось, что это одного уровня действия.
     return Row(
       children: [
-        _RoundButton(
-          icon: Icons.task_alt,
-          tooltip: t('Трекер намаза'),
-          onTap: onOpenTracker,
+        Expanded(
+          child: _BarButton(
+            icon: Icons.task_alt,
+            label: t('Трекер'),
+            onTap: onOpenTracker,
+          ),
         ),
-        const Spacer(),
-        _RoundButton(
-          icon: Icons.more_horiz,
-          tooltip: t('Ещё'),
-          onTap: () => _showMoreSheet(context),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _BarButton(
+            icon: Icons.grid_view_rounded,
+            label: t('Ещё'),
+            onTap: () => _showMoreSheet(context),
+          ),
         ),
-        const Spacer(),
-        PressableScale(
-          onTap: () => Navigator.push(context,
-              MaterialPageRoute(builder: (_) => const QuranPage())),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(30),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 14),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(30),
-                  border: Border.all(color: AppColors.gold, width: 1.2),
-                ),
-                child: Text(t('КОРАН'),
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.5,
-                        color: AppColors.cream)),
-              ),
-            ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _BarButton(
+            icon: Icons.menu_book_rounded,
+            label: t('Коран'),
+            accent: true,
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const QuranPage())),
           ),
         ),
       ],
@@ -464,35 +514,3 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
-class _RoundButton extends StatelessWidget {
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-  const _RoundButton(
-      {required this.icon, required this.tooltip, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: PressableScale(
-        onTap: onTap,
-        child: ClipOval(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.black.withValues(alpha: 0.25),
-                border: Border.all(color: AppColors.gold, width: 1.2),
-              ),
-              child: Icon(icon, color: AppColors.cream),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}

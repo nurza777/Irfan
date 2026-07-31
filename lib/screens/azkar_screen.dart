@@ -74,15 +74,24 @@ class _AzkarScreenState extends State<AzkarScreen> {
               SizedBox(height: MediaQuery.of(context).padding.top + 52),
               SizedBox(
                 height: 44,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _cats.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 8),
-                  itemBuilder: (context, i) => _CatTab(
-                    category: _cats[i],
-                    active: i == _cat,
-                    onTap: () => setState(() => _cat = i),
+                child: ShaderMask(
+                  shaderCallback: (rect) => const LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [Colors.white, Colors.white, Colors.transparent],
+                    stops: [0, 0.82, 1],
+                  ).createShader(rect),
+                  blendMode: BlendMode.dstIn,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: _cats.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, i) => _CatTab(
+                      category: _cats[i],
+                      active: i == _cat,
+                      onTap: () => setState(() => _cat = i),
+                    ),
                   ),
                 ),
               ),
@@ -123,20 +132,23 @@ class _CatTab extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16),
         alignment: Alignment.center,
         decoration: BoxDecoration(
+          // Выбранная вкладка — золотая, как выбор везде. Зелёная заливка
+          // с золотой рамкой смешивала два акцента в одном элементе.
           color: active
-              ? AppColors.domeGreen.withValues(alpha: 0.55)
+              ? AppColors.selection.withValues(alpha: 0.18)
               : Colors.black.withValues(alpha: 0.25),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(
               color: active
-                  ? AppColors.gold
-                  : Colors.white.withValues(alpha: 0.15)),
+                  ? AppColors.selection
+                  : Colors.white.withValues(alpha: 0.15),
+              width: active ? 1.4 : 1),
         ),
         child: Row(
           children: [
             Icon(category.icon,
                 size: 18,
-                color: active ? AppColors.cream : Colors.white70),
+                color: active ? AppColors.goldLight : Colors.white70),
             const SizedBox(width: 6),
             Text(t(category.title),
                 style: TextStyle(
@@ -260,15 +272,17 @@ class _CounterPill extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: AppColors.accentGreen.withValues(alpha: 0.22),
+          // Действие — золотом, как везде; зелёный остаётся за отметкой
+          // «сделано» (галочка справа).
+          color: AppColors.selection.withValues(alpha: 0.18),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.accentGreen),
+          border: Border.all(color: AppColors.selection, width: 1.2),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.touch_app_outlined,
-                size: 18, color: AppColors.cream),
+                size: 18, color: AppColors.goldLight),
             const SizedBox(width: 8),
             Text(
               target > 1

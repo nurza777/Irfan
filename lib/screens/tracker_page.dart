@@ -59,8 +59,17 @@ class TrackerPage extends StatelessWidget {
                 child: Column(
                   children: [
                     const SizedBox(height: 4),
-                    for (final k
-                        in PrayerKey.values.where((k) => k.isPrayer))
+                    // Волосяные линии между намазами: без них пять строк
+                    // расплывались в одно пятно и глазу не за что зацепиться.
+                    for (final (i, k) in PrayerKey.values
+                        .where((k) => k.isPrayer)
+                        .indexed) ...[
+                      if (i > 0)
+                        Divider(
+                            height: 1,
+                            indent: 16,
+                            endIndent: 16,
+                            color: Colors.white.withValues(alpha: 0.08)),
                       _PrayerRow(
                         prayer: k,
                         time: hhmm.format(times[k]),
@@ -69,6 +78,7 @@ class TrackerPage extends StatelessWidget {
                         enabled: !times[k].isAfter(state.now),
                         onChanged: (s) => state.markPrayer(k, s),
                       ),
+                    ],
                     const SizedBox(height: 4),
                   ],
                 ),
@@ -77,32 +87,39 @@ class TrackerPage extends StatelessWidget {
             const SizedBox(height: 24),
             FadeSlideIn(
               delay: const Duration(milliseconds: 280),
-              child: Row(
-                children: [
-                  Text(t('Последние 7 дней'),
-                      style: TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w600)),
-                  const Spacer(),
-                  PressableScale(
+              child: SectionLabel(
+                t('Последние 7 дней'),
+                trailing: PressableScale(
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
                           builder: (_) => const PeriodStatsScreen()),
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.query_stats,
-                            size: 18, color: AppColors.goldLight),
-                        const SizedBox(width: 6),
-                        Text(t('За период'),
-                            style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.goldLight)),
-                      ],
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.32),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color:
+                                AppColors.gold.withValues(alpha: 0.45)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.query_stats,
+                              size: 16, color: AppColors.goldLight),
+                          const SizedBox(width: 6),
+                          Text(t('За период'),
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.goldLight)),
+                        ],
+                      ),
                     ),
                   ),
-                ],
               ),
             ),
             const SizedBox(height: 12),
@@ -120,11 +137,18 @@ class TrackerPage extends StatelessWidget {
               child: FadeSlideIn(
                 delay: const Duration(milliseconds: 500),
                 offset: Offset.zero,
-                child: Text(
-                  t('Свайп вправо — на главный экран'),
-                  style: TextStyle(
-                      fontSize: 13,
-                      color: Colors.white.withValues(alpha: 0.55)),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.30),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    t('Свайп вправо — на главный экран'),
+                    style: const TextStyle(
+                        fontSize: 12.5, color: AppColors.textFaint),
+                  ),
                 ),
               ),
             ),
@@ -156,13 +180,19 @@ class _StreakBar extends StatelessWidget {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: (active ? AppColors.gold : Colors.white)
-                  .withValues(alpha: 0.15),
+              color: AppColors.gold.withValues(alpha: active ? 0.20 : 0.10),
+              // Кольцо вместо серого пятна: без серии значок выглядел
+              // выключенным элементом, а не приглашением начать.
+              border: Border.all(
+                  color: AppColors.gold.withValues(alpha: active ? 0.8 : 0.35),
+                  width: 1),
             ),
             child: Icon(
               active ? Icons.local_fire_department : Icons.bolt_outlined,
-              color: active ? AppColors.goldLight : Colors.white70,
-              size: 24,
+              color: active
+                  ? AppColors.goldLight
+                  : AppColors.goldLight.withValues(alpha: 0.7),
+              size: 22,
             ),
           ),
           const SizedBox(width: 12),
@@ -228,7 +258,7 @@ class _PrayerRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
           Expanded(
@@ -246,10 +276,17 @@ class _PrayerRow extends StatelessWidget {
             ),
           ),
           if (!enabled)
-            Text(t('ещё не время'),
-                style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.white.withValues(alpha: 0.45)))
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(t('ещё не время'),
+                  style: const TextStyle(
+                      fontSize: 12.5, color: AppColors.textFaint)),
+            )
           else ...[
             _StatusButton(
               icon: Icons.check_circle,

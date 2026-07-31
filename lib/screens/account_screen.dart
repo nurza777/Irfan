@@ -229,9 +229,16 @@ class _AuthFormState extends State<_AuthForm> {
                   width: double.infinity,
                   child: FilledButton(
                     style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.accentGreen,
+                      // Главное действие — золотое, как остальные акценты;
+                      // плоский зелёный прямоугольник выпадал из палитры.
+                      backgroundColor: AppColors.gold,
+                      foregroundColor: const Color(0xFF20180A),
+                      disabledBackgroundColor:
+                          AppColors.gold.withValues(alpha: 0.4),
                       padding:
-                          const EdgeInsets.symmetric(vertical: 14),
+                          const EdgeInsets.symmetric(vertical: 15),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
                     ),
                     onPressed: _busy ? null : _submit,
                     child: _busy
@@ -240,7 +247,7 @@ class _AuthFormState extends State<_AuthForm> {
                             height: 20,
                             child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                color: Colors.white))
+                                color: Color(0xFF20180A)))
                         : Text(
                             _isLogin ? t('Войти') : t('Создать аккаунт'),
                             style: const TextStyle(
@@ -255,11 +262,21 @@ class _AuthFormState extends State<_AuthForm> {
         const SizedBox(height: 14),
         FadeSlideIn(
           delay: const Duration(milliseconds: 200),
-          child: Text(
-            t('Аккаунт хранится локально на этом устройстве'),
-            style: TextStyle(
-                fontSize: 13,
-                color: Colors.white.withValues(alpha: 0.55)),
+          // Подпись ложится прямо на фото подсвеченных зданий — без подложки
+          // серый текст на них не читался.
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.32),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              t('Аккаунт хранится локально на этом устройстве'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 12.5, color: AppColors.textFaint),
+            ),
           ),
         ),
       ],

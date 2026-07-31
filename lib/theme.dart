@@ -14,6 +14,19 @@ abstract class AppColors {
   static const Color cardGlass = Color(0x66101E18);
   static const Color brick = Color(0xFFD9C9A3);
 
+  /// Акцент выбора: золото. Всё, что человек выбрал или может нажать,
+  /// подсвечивается им — раньше половина экранов делала это зелёным, и два
+  /// акцента спорили между собой.
+  static const Color selection = gold;
+
+  /// Зелёный оставлен за смыслом «сейчас / сделано»: текущий намаз,
+  /// отмеченный намаз, идущий эфир. Выбор им больше не показываем.
+  static const Color success = accentGreen;
+
+  // Текст на стекле: три ступени вместо россыпи withValues по коду.
+  static const Color textSoft = Color(0xCCFFFFFF);   // 80 %
+  static const Color textFaint = Color(0x8AFFFFFF);  // 54 %
+
   // Старая книга (режим «Страница» Корана) — сепия, чернила.
   static const Color paper = Color(0xFFEFE0BE);
   static const Color paperDark = Color(0xFFDFC996);

@@ -2,6 +2,8 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../theme.dart';
+
 /// Стеклянный блок: блюр того, что за ним, полупрозрачная заливка
 /// с лёгким градиентом и тонкая светлая рамка.
 class GlassCard extends StatelessWidget {
@@ -11,6 +13,15 @@ class GlassCard extends StatelessWidget {
   final double blur;
   /// Насколько тёмная заливка (0 — почти прозрачная).
   final double darkness;
+
+  /// Выделенное состояние: золотая рамка вместо светлой. Один способ
+  /// показать «выбрано» на всё приложение.
+  final bool selected;
+
+  /// Тень под карточкой. Обои — ночное фото с яркими огнями, и без тени
+  /// край стекла на них теряется.
+  final bool elevated;
+
   const GlassCard({
     super.key,
     required this.child,
@@ -18,11 +29,13 @@ class GlassCard extends StatelessWidget {
     this.padding,
     this.blur = 16,
     this.darkness = 0.28,
+    this.selected = false,
+    this.elevated = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
+    final card = ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
@@ -31,18 +44,138 @@ class GlassCard extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(radius),
             border: Border.all(
-                color: Colors.white.withValues(alpha: 0.18), width: 1),
+                color: selected
+                    ? AppColors.selection
+                    : Colors.white.withValues(alpha: 0.16),
+                width: selected ? 1.4 : 1),
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
                 Colors.white.withValues(alpha: 0.10),
-                Colors.black.withValues(alpha: darkness + 0.12),
+                Colors.black.withValues(alpha: darkness + 0.14),
               ],
             ),
             color: Colors.black.withValues(alpha: darkness),
           ),
           child: child,
+        ),
+      ),
+    );
+    if (!elevated) return card;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: card,
+    );
+  }
+}
+
+/// Заголовок раздела поверх обоев. Собственная подложка нужна потому, что
+/// текст ложится прямо на фото: над тёмным небом он читается, над подсвеченной
+/// башней — уже нет.
+class SectionLabel extends StatelessWidget {
+  final String text;
+  final Widget? trailing;
+  const SectionLabel(this.text, {super.key, this.trailing});
+
+  @override
+  Widget build(BuildContext context) {
+    // Без Spacer: он забирал всё свободное место, и заголовок ужимался до
+    // «Последн…», хотя строка была наполовину пустой.
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Flexible(
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.34),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w700)),
+          ),
+        ),
+        if (trailing != null) ...[
+          const SizedBox(width: 10),
+          trailing!,
+        ],
+      ],
+    );
+  }
+}
+
+/// Пилюля выбора: один вид на все экраны — настройки, язык, фильтры.
+/// Выбранная золотая, остальные — стекло.
+class SelectPill extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final IconData? icon;
+  final bool dense;
+
+  const SelectPill({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.icon,
+    this.dense = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(30),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: EdgeInsets.symmetric(
+              horizontal: dense ? 14 : 18, vertical: dense ? 9 : 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(30),
+            color: selected
+                ? AppColors.selection.withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.05),
+            border: Border.all(
+              color: selected
+                  ? AppColors.selection
+                  : Colors.white.withValues(alpha: 0.18),
+              width: selected ? 1.4 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(icon,
+                    size: 16,
+                    color: selected ? AppColors.goldLight : AppColors.textSoft),
+                const SizedBox(width: 6),
+              ],
+              Text(label,
+                  style: TextStyle(
+                    fontSize: dense ? 14 : 15,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected ? AppColors.cream : AppColors.textSoft,
+                  )),
+            ],
+          ),
         ),
       ),
     );
