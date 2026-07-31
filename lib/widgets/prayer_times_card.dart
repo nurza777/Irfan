@@ -95,15 +95,17 @@ class PrayerTimesCard extends StatelessWidget {
                 bottom: Radius.circular(21)),
             child: DecoratedBox(
               decoration: BoxDecoration(
+                // Приглушённый, а не заливка в полную силу: полоса не
+                // должна перетягивать внимание с самих времён.
                 gradient: LinearGradient(
                   colors: [
-                    AppColors.domeDark.withValues(alpha: 0.85),
-                    AppColors.accentGreen.withValues(alpha: 0.75),
+                    AppColors.domeDark.withValues(alpha: 0.72),
+                    AppColors.accentGreen.withValues(alpha: 0.55),
                   ],
                 ),
               ),
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 13),
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 11),
                 child: Row(
                   children: [
                     Text(
@@ -125,7 +127,7 @@ class PrayerTimesCard extends StatelessWidget {
                     Text(
                       countdown(),
                       style: const TextStyle(
-                        fontSize: 19,
+                        fontSize: 18,
                         fontWeight: FontWeight.w700,
                         fontFeatures: [FontFeature.tabularFigures()],
                         color: AppColors.cream,

@@ -145,8 +145,10 @@ class SelectPill extends StatelessWidget {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
+          // Высота 38–42 pt: палец попадает уверенно, но кнопка не
+          // занимает пол-экрана.
           padding: EdgeInsets.symmetric(
-              horizontal: dense ? 14 : 18, vertical: dense ? 9 : 12),
+              horizontal: dense ? 13 : 16, vertical: dense ? 8 : 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(30),
             color: selected
@@ -170,7 +172,7 @@ class SelectPill extends StatelessWidget {
               ],
               Text(label,
                   style: TextStyle(
-                    fontSize: dense ? 14 : 15,
+                    fontSize: dense ? 13.5 : 14.5,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                     color: selected ? AppColors.cream : AppColors.textSoft,
                   )),

@@ -215,11 +215,11 @@ class SettingsScreen extends StatelessWidget {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: active ? 0.4 : 0.15),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
                 color: active
                     ? AppColors.gold
@@ -245,20 +245,22 @@ class SettingsScreen extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
         decoration: BoxDecoration(
           color: active
-              ? AppColors.domeGreen.withValues(alpha: 0.6)
+              ? AppColors.selection.withValues(alpha: 0.18)
               : Colors.black.withValues(alpha: 0.25),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
               color: active
-                  ? AppColors.gold
-                  : Colors.white.withValues(alpha: 0.15)),
+                  ? AppColors.selection
+                  : Colors.white.withValues(alpha: 0.15),
+              width: active ? 1.4 : 1),
         ),
         child: Text(t(c.name),
             style: TextStyle(
-                fontSize: 14,
+                fontSize: 13.5,
+                color: active ? AppColors.cream : AppColors.textSoft,
                 fontWeight:
                     active ? FontWeight.w700 : FontWeight.w500)),
       ),

@@ -77,8 +77,8 @@ class HomePage extends StatelessWidget {
                       blur: 10,
                       darkness: 0.18,
                       child: SizedBox(
-                        width: 44,
-                        height: 44,
+                        width: 38,
+                        height: 38,
                         child: user == null
                             ? const Icon(Icons.person_outline,
                                 color: Colors.white)
@@ -106,10 +106,10 @@ class HomePage extends StatelessWidget {
                       blur: 10,
                       darkness: 0.18,
                       child: SizedBox(
-                        height: 44,
+                        height: 38,
                         child: Padding(
                           padding:
-                              const EdgeInsets.symmetric(horizontal: 12),
+                              const EdgeInsets.symmetric(horizontal: 11),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -279,26 +279,29 @@ class _BarButton extends StatelessWidget {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
           child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 11),
+            // Иконка и подпись в строку: столбиком кнопка выходила в
+            // полсотни точек высотой и занимала низ экрана целиком.
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: accent ? 0.30 : 0.24),
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(18),
               border: Border.all(
                   color: accent
                       ? AppColors.gold
                       : Colors.white.withValues(alpha: 0.20),
                   width: accent ? 1.3 : 1),
             ),
-            child: Column(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(icon,
-                    size: 22,
+                    size: 18,
                     color: accent ? AppColors.goldLight : Colors.white),
-                const SizedBox(height: 4),
+                const SizedBox(width: 7),
                 Text(label,
                     style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 13.5,
                         fontWeight: FontWeight.w600,
                         color: accent ? AppColors.cream : AppColors.textSoft)),
               ],
@@ -325,31 +328,24 @@ class _BottomBar extends StatelessWidget {
     // и размеры были разные, а «КОРАН» кричал капсом на фоне безымянных
     // иконок — по виду не читалось, что это одного уровня действия.
     return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        Expanded(
-          child: _BarButton(
-            icon: Icons.task_alt,
-            label: t('Трекер'),
-            onTap: onOpenTracker,
-          ),
+        _BarButton(
+          icon: Icons.task_alt,
+          label: t('Трекер'),
+          onTap: onOpenTracker,
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _BarButton(
-            icon: Icons.grid_view_rounded,
-            label: t('Ещё'),
-            onTap: () => _showMoreSheet(context),
-          ),
+        _BarButton(
+          icon: Icons.grid_view_rounded,
+          label: t('Ещё'),
+          onTap: () => _showMoreSheet(context),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _BarButton(
-            icon: Icons.menu_book_rounded,
-            label: t('Коран'),
-            accent: true,
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const QuranPage())),
-          ),
+        _BarButton(
+          icon: Icons.menu_book_rounded,
+          label: t('Коран'),
+          accent: true,
+          onTap: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const QuranPage())),
         ),
       ],
     );

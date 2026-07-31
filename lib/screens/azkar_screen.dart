@@ -247,7 +247,10 @@ class _AzkarCard extends StatelessWidget {
                       height: 1.4,
                       color: Colors.white.withValues(alpha: 0.8))),
               const SizedBox(height: 14),
-              _CounterPill(count: count, target: azkar.count, onTap: onTap),
+              Center(
+                child: _CounterPill(
+                    count: count, target: azkar.count, onTap: onTap),
+              ),
             ],
           ),
         ),
@@ -270,7 +273,9 @@ class _CounterPill extends StatelessWidget {
     return PressableScale(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        // По содержимому и по центру: во всю ширину кнопка выглядела
+        // плитой и перевешивала сам текст зикра.
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
         decoration: BoxDecoration(
           // Действие — золотом, как везде; зелёный остаётся за отметкой
           // «сделано» (галочка справа).
@@ -279,17 +284,18 @@ class _CounterPill extends StatelessWidget {
           border: Border.all(color: AppColors.selection, width: 1.2),
         ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.touch_app_outlined,
-                size: 18, color: AppColors.goldLight),
+                size: 17, color: AppColors.goldLight),
             const SizedBox(width: 8),
             Text(
               target > 1
                   ? '${t('Читать')} · $count / $target'
                   : t('Прочитано'),
               style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700),
+                  fontSize: 14, fontWeight: FontWeight.w700),
             ),
             if (done) ...[
               const SizedBox(width: 8),

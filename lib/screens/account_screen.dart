@@ -236,9 +236,9 @@ class _AuthFormState extends State<_AuthForm> {
                       disabledBackgroundColor:
                           AppColors.gold.withValues(alpha: 0.4),
                       padding:
-                          const EdgeInsets.symmetric(vertical: 15),
+                          const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16)),
+                          borderRadius: BorderRadius.circular(14)),
                     ),
                     onPressed: _busy ? null : _submit,
                     child: _busy
@@ -289,11 +289,11 @@ class _AuthFormState extends State<_AuthForm> {
       onTap: () => setState(() => _gender = g),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: 9),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: active ? 0.4 : 0.15),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
               color: active
                   ? AppColors.gold
@@ -328,11 +328,11 @@ class _AuthFormState extends State<_AuthForm> {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: active ? 0.4 : 0.15),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
                 color: active
                     ? AppColors.gold
@@ -341,7 +341,7 @@ class _AuthFormState extends State<_AuthForm> {
           ),
           child: Text(t(text),
               style: TextStyle(
-                  fontSize: 15,
+                  fontSize: 14,
                   fontWeight: FontWeight.w600,
                   color: active
                       ? AppColors.cream
