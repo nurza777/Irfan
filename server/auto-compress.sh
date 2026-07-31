@@ -53,6 +53,35 @@ for f in "$UPLOADS"/*.{mp4,mov,m4v,avi,mkv}; do
                  -of csv=p=0 "$f" 2>/dev/null | cut -d. -f1)
   [[ -z "${dur_before:-}" ]] && { echo "$name" >> "$STATE"; continue; }
 
+  # Не трогаем то, что уже сжато толково.
+  #
+  # Сюда заливают и материал, прошедший обработку на стороне (например,
+  # пересобранный из HLS). Повторное кодирование таких файлов — это второе
+  # поколение сжатия: качество теряется безвозвратно, а выигрыш по размеру
+  # не стоит того. Признаки «уже готово»: современный кодек либо низкий
+  # битрейт на мегапиксель.
+  # ffprobe отдаёт «hevc,1280,720» — читаем через IFS, без возни с кавычками.
+  IFS=, read -r vcodec vw vh < <(ffprobe -v error -select_streams v:0 \
+      -show_entries stream=codec_name,width,height -of csv=p=0 "$f" 2>/dev/null)
+  brate=$(ffprobe -v error -show_entries format=bit_rate \
+            -of csv=p=0 "$f" 2>/dev/null)
+
+  if [[ "$vcodec" == "hevc" || "$vcodec" == "av1" || "$vcodec" == "vp9" ]]; then
+    log "пропуск $name: уже $vcodec, повторное сжатие только испортит"
+    echo "$name" >> "$STATE"; continue
+  fi
+
+  if [[ -n "${brate:-}" && -n "${vw:-}" && -n "${vh:-}" ]] \
+     && (( vw > 0 && vh > 0 )); then
+    # Кбит/с на мегапиксель. Съёмка с телефона даёт 4000+, уже сжатый
+    # материал — около 1500–2000.
+    per_mp=$(( brate / 1000 * 1000000 / (vw * vh) ))
+    if (( per_mp < 2500 )); then
+      log "пропуск $name: ${per_mp} кбит/с на мегапиксель — уже сжато"
+      echo "$name" >> "$STATE"; continue
+    fi
+  fi
+
   tmp="${f}.compressing.mp4"
   # nice/ionice — чтобы API и раздача видео не тормозили из-за кодирования.
   nice -n 19 ionice -c3 ffmpeg -hide_banner -loglevel error -y \
