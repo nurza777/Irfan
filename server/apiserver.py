@@ -588,8 +588,120 @@ def safe_upload_name(raw):
     return stem + ext
 
 
+# ——— Папки для загруженных файлов ———
+#
+# Папки — РАЗМЕТКА, а не каталоги на диске: файлы как лежали в uploads/, так и
+# лежат. Иначе перекладывание урока в папку меняло бы его адрес и ломало уже
+# опубликованные ссылки в courses.json (а их на сервере больше двухсот).
+# Указатель держим РЯДОМ с api/, а не внутри: всё, что в ROOT, раздаётся по
+# HTTP, и список файлов стал бы публичным — листинги мы как раз закрыли.
+MEDIA_INDEX = os.path.join(os.path.dirname(ROOT), 'media-folders.json')
+_MAX_FOLDERS = 200
+_FOLDER_NAME_MAX = 60
+
+
+def _load_index():
+    idx = _read_json(MEDIA_INDEX, {})
+    if not isinstance(idx, dict):
+        idx = {}
+    folders = idx.get('folders')
+    files = idx.get('files')
+    return {
+        'folders': folders if isinstance(folders, list) else [],
+        'files': files if isinstance(files, dict) else {},
+    }
+
+
+def _save_index(idx):
+    with open(MEDIA_INDEX, 'w', encoding='utf-8') as f:
+        json.dump(idx, f, ensure_ascii=False, indent=2)
+
+
+def _folder_name(raw):
+    name = ' '.join(str(raw or '').split())      # схлопываем переносы и табы
+    return name[:_FOLDER_NAME_MAX]
+
+
+def _folder_op(data):
+    """Создание, переименование и удаление папки. Файлы при удалении папки
+    остаются на месте и просто становятся «без папки»."""
+    op = data.get('op')
+    fid = str(data.get('id') or '')[:40]
+    name = _folder_name(data.get('name'))
+    with _lock:
+        idx = _load_index()
+        folders = idx['folders']
+        if op == 'create':
+            if not name:
+                return 400, {'error': 'empty name'}
+            if len(folders) >= _MAX_FOLDERS:
+                return 507, {'error': 'too many folders'}
+            folder = {
+                'id': f'f{int(time.time() * 1000)}-{secrets.token_hex(3)}',
+                'name': name,
+                'created': int(time.time() * 1000),
+            }
+            folders.append(folder)
+            _save_index(idx)
+            return 201, folder
+        found = next((f for f in folders if f.get('id') == fid), None)
+        if found is None:
+            return 404, {'error': 'no folder'}
+        if op == 'rename':
+            if not name:
+                return 400, {'error': 'empty name'}
+            found['name'] = name
+            _save_index(idx)
+            return 200, found
+        if op == 'delete':
+            folders.remove(found)
+            idx['files'] = {k: v for k, v in idx['files'].items() if v != fid}
+            _save_index(idx)
+            return 200, {'id': fid, 'deleted': True}
+    return 400, {'error': 'bad op'}
+
+
+def _media_move(data):
+    """Раскладывает файлы по папкам. Пустой folder — вынуть из папки."""
+    names = data.get('names')
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, list) or not names:
+        return 400, {'error': 'no names'}
+    fid = str(data.get('folder') or '')[:40]
+    with _lock:
+        idx = _load_index()
+        if fid and not any(f.get('id') == fid for f in idx['folders']):
+            return 404, {'error': 'no folder'}
+        moved = 0
+        for raw in names[:2000]:
+            name = safe_upload_name(raw)
+            if not name or not os.path.isfile(os.path.join(UPLOADS, name)):
+                continue
+            if fid:
+                idx['files'][name] = fid
+            else:
+                idx['files'].pop(name, None)
+            moved += 1
+        _save_index(idx)
+    return 200, {'moved': moved, 'folder': fid}
+
+
+def _assign_folder(name, fid):
+    """Кладёт только что загруженный файл в папку (тихо, без ответа)."""
+    if not fid:
+        return
+    with _lock:
+        idx = _load_index()
+        if any(f.get('id') == fid for f in idx['folders']):
+            idx['files'][name] = fid
+            _save_index(idx)
+
+
 def _media_list():
-    """Загруженные файлы + сколько места осталось на диске."""
+    """Загруженные файлы + папки + сколько места осталось на диске."""
+    idx = _load_index()
+    by_file = idx['files']
     items = []
     try:
         for name in sorted(os.listdir(UPLOADS)):
@@ -604,10 +716,15 @@ def _media_list():
                 'url': f'/uploads/{name}',
                 # Абсолютная ссылка для каталога — всегда на публичный адрес.
                 'publicUrl': f'{MEDIA_BASE}/uploads/{name}',
+                'folder': by_file.get(name, ''),
             })
     except OSError:
         pass
     items.sort(key=lambda x: x['mtime'], reverse=True)
+    counts = {}
+    for it in items:
+        counts[it['folder']] = counts.get(it['folder'], 0) + 1
+    folders = [dict(f, count=counts.get(f.get('id'), 0)) for f in idx['folders']]
     try:
         du = shutil.disk_usage(ROOT)
         disk = {'free': du.free, 'total': du.total}
@@ -627,7 +744,8 @@ def _media_list():
                         f"{l.get('title','')}")
     for it in items:
         it['usedIn'] = used.get(it['name'], [])
-    return {'items': items, 'disk': disk, 'mediaBase': MEDIA_BASE}
+    return {'items': items, 'folders': folders, 'disk': disk,
+            'mediaBase': MEDIA_BASE}
 
 
 def _delete_media(data):
@@ -643,6 +761,12 @@ def _delete_media(data):
         os.remove(full)
     except OSError as e:
         return 500, {'error': str(e)}
+    # Метку папки убираем следом, иначе указатель копил бы записи о том,
+    # чего уже нет, и счётчики папок врали бы.
+    with _lock:
+        idx = _load_index()
+        if idx['files'].pop(name, None) is not None:
+            _save_index(idx)
     return 200, {'name': name, 'deleted': True}
 
 
@@ -939,11 +1063,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _confirm_code(data)
             self._send_json(code, body)
             return
-        if p == '/media/delete':
+        if p in ('/media/delete', '/media/folder', '/media/move'):
             if self._role_checked() != 'admin':
                 self._deny()
                 return
-            code, body = _delete_media(data)
+            code, body = (
+                _delete_media(data) if p == '/media/delete'
+                else _folder_op(data) if p == '/media/folder'
+                else _media_move(data))
             self._send_json(code, body)
             return
         if p in ('/users/flag', '/users/delete'):
@@ -997,7 +1124,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Имя файла в uploads чистим сами: каталог раздаётся всем, и
         # заливать туда что попало (или уходить вверх по дереву) нельзя.
         raw = self.path.split('?')[0]
-        if raw.startswith('/uploads/'):
+        upload = raw.startswith('/uploads/')
+        if upload:
             name = safe_upload_name(raw[len('/uploads/'):])
             if not name:
                 self._send_json(415, {'error': 'unsupported file type'})
@@ -1023,6 +1151,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     break
                 f.write(data)
                 remaining -= len(data)
+        if upload:
+            # Имя после чистки отличается от присланного (транслитерация,
+            # замена символов) — панели оно нужно, чтобы сразу положить файл
+            # в открытую папку и показать его без перезагрузки списка.
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            _assign_folder(name, (q.get('folder') or [''])[0][:40])
+            self._send_json(201, {
+                'name': name,
+                'url': f'/uploads/{name}',
+                'publicUrl': f'{MEDIA_BASE}/uploads/{name}',
+            })
+            return
         self.send_response(201)
         self.send_header('Content-Length', '0')
         self.end_headers()

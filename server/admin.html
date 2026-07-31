@@ -96,6 +96,15 @@
   }
   .muted { color: var(--muted); font-size: 13px; }
   .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chips button.on { background: var(--gold); border-color: var(--gold); color: #16232f; font-weight: 700; }
+  .chips .cnt { opacity: .7; font-size: 12px; }
+  /* Плеер: широкий диалог, видео по ширине окна и не выше экрана. */
+  dialog.wide { max-width: 900px; }
+  dialog video, dialog img { width: 100%; max-height: 68vh; border-radius: 10px; background: #000; }
+  td.sel { width: 30px; }
+  td.sel input { width: 16px; height: 16px; }
 </style>
 </head>
 <body>
@@ -205,10 +214,13 @@ const fmtBytes = (b) => b >= 1 << 30 ? (b / 2 ** 30).toFixed(1) + ' ГБ'
   : (b / 1024).toFixed(0) + ' КБ';
 
 /// Загрузка файла с прогрессом. fetch не показывает ход отправки, поэтому XHR.
-function uploadFile(file, name, onProgress) {
+function uploadFile(file, name, onProgress, folder) {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', API + '/uploads/' + encodeURIComponent(name));
+    // Папку передаём сразу при загрузке: имя на сервере может измениться
+    // (кириллица → латиница), и разложить файл вторым запросом было бы не по чему.
+    xhr.open('PUT', API + '/uploads/' + encodeURIComponent(name)
+      + (folder ? '?folder=' + encodeURIComponent(folder) : ''));
     xhr.setRequestHeader('Authorization', 'Basic ' + auth);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = (e) => {
@@ -234,7 +246,10 @@ function dialog(html) {
 
 const state = {
   users: [], access: [], codes: [], catalog: [], pending: {},
-  media: [], disk: {}, author: '',
+  media: [], mediaFolders: [], disk: {}, author: '',
+  // Какая папка открыта в разделе «Видео»: '*' — все файлы, '' — без папки,
+  // иначе id папки.
+  mediaFolder: '*',
   // Публичный адрес сервера для ссылок на уроки. Панель могут открыть по
   // защищённой ссылке Tailscale — складывать ссылку из адреса админа нельзя,
   // иначе ученикам достанется адрес служебного канала.
@@ -258,7 +273,13 @@ async function loadAll() {
   state.catalog = courses?.directions || [];
   state.author = courses?.author || '';
   state.media = media?.items || [];
+  state.mediaFolders = media?.folders || [];
   state.disk = media?.disk || {};
+  // Папку могли удалить в другой вкладке — не оставляем панель в пустоте.
+  if (state.mediaFolder !== '*' && state.mediaFolder !== ''
+      && !state.mediaFolders.some((f) => f.id === state.mediaFolder)) {
+    state.mediaFolder = '*';
+  }
   state.mediaBase = media?.mediaBase || API;
   state.pending = { courses: pc, news: pn, azkar: pa };
 }
@@ -569,14 +590,62 @@ function viewCodes() {
 
 // — Видео и файлы
 
+/// Чем файл открывать: браузер умеет видео, звук и картинки, остальное —
+/// ссылкой.
+function mediaKind(name) {
+  const e = String(name).toLowerCase().split('.').pop();
+  if (['mp4', 'mov', 'm4v'].includes(e)) return 'video';
+  if (['mp3', 'm4a', 'aac'].includes(e)) return 'audio';
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(e)) return 'image';
+  return 'file';
+}
+
+const folderName = (id) =>
+  state.mediaFolders.find((f) => f.id === id)?.name || '';
+
+/// Выбранные галочками файлы — для переноса пачкой.
+const mediaSel = new Set();
+
 function viewMedia() {
   const d = state.disk;
-  const used = state.media.reduce((a, m) => a + m.size, 0);
+  const cur = state.mediaFolder;
+  const folders = state.mediaFolders;
+  const list = cur === '*' ? state.media
+    : state.media.filter((m) => (m.folder || '') === cur);
+  const loose = state.media.filter((m) => !m.folder).length;
+  const active = folders.find((f) => f.id === cur);
+  const folderOpts = (sel) =>
+    `<option value=""${sel ? '' : ' selected'}>— без папки —</option>` +
+    folders.map((f) => `<option value="${esc(f.id)}"${f.id === sel ? ' selected' : ''}
+      >${esc(f.name)}</option>`).join('');
+
   return `
+  <div class="card">
+    <h2>Папки</h2>
+    <div class="chips">
+      <button data-folder="*" class="${cur === '*' ? 'on' : ''}"
+        >Все <span class="cnt">${state.media.length}</span></button>
+      <button data-folder="" class="${cur === '' ? 'on' : ''}"
+        >Без папки <span class="cnt">${loose}</span></button>
+      ${folders.map((f) => `<button data-folder="${esc(f.id)}"
+        class="${f.id === cur ? 'on' : ''}">${esc(f.name)}
+        <span class="cnt">${f.count}</span></button>`).join('')}
+      <button id="folder-new">+ Новая папка</button>
+      ${active ? `<span style="width:12px"></span>
+        <button id="folder-ren">Переименовать</button>
+        <button class="danger" id="folder-del">Удалить папку</button>` : ''}
+    </div>
+    <p class="muted" style="margin:10px 0 0">Папки — это разделы внутри панели.
+      Сами файлы остаются на своих адресах, поэтому перенос в папку никогда
+      не ломает уже опубликованные уроки.</p>
+  </div>
+
   <div class="card">
     <h2>Загрузить видео</h2>
     <p class="muted">MP4, MOV, M4V — а также аудио, PDF и картинки.
       Файл кладётся на сервер и сразу доступен приложению по прямой ссылке.</p>
+    <label>Положить в папку</label>
+    <select id="up-folder" style="max-width:340px">${folderOpts(active?.id)}</select>
     <div id="drop" style="margin-top:12px;border:1px dashed var(--line);
          border-radius:12px;padding:22px;text-align:center">
       <p style="margin:0 0 10px">Перетащите файлы сюда или</p>
@@ -585,34 +654,92 @@ function viewMedia() {
     </div>
     <div id="progress" style="margin-top:12px"></div>
     ${d.free ? `<p class="muted" style="margin-top:12px">
-      Занято уроками: ${fmtBytes(used)} · свободно на диске:
-      ${fmtBytes(d.free)} из ${fmtBytes(d.total)}</p>` : ''}
+      Свободно на диске: ${fmtBytes(d.free)}</p>` : ''}
   </div>
 
   <div class="card">
-    <h2>На сервере (${state.media.length})</h2>
-    ${state.media.length ? `<table><thead><tr>
+    <h2>${active ? esc(active.name) : cur === '' ? 'Без папки' : 'Все файлы'}
+      (${list.length})</h2>
+    ${state.media.length ? `<input id="mq" placeholder="Поиск по названию"
+        style="max-width:340px;margin-bottom:12px">` : ''}
+    <div id="mbulk" class="row-actions" style="display:none;align-items:center;
+         margin-bottom:12px">
+      <span class="muted" id="mbulk-n"></span>
+      <select id="mbulk-folder" style="max-width:240px">${folderOpts(active?.id)}</select>
+      <button class="primary" id="mbulk-go">Переместить</button>
+    </div>
+    ${list.length ? `<table><thead><tr>
+      <th class="sel"><input type="checkbox" id="msel-all"></th>
       <th>Файл</th><th>Размер</th><th>Загружен</th><th>Где используется</th><th></th>
     </tr></thead><tbody>
-    ${state.media.map((m) => `<tr>
-      <td style="max-width:340px;word-break:break-all">${esc(m.name)}</td>
+    ${list.map((m) => `<tr data-row="${esc(m.name)}">
+      <td class="sel"><input type="checkbox" data-sel="${esc(m.name)}"></td>
+      <td style="max-width:320px;word-break:break-all">${esc(m.name)}
+        ${cur === '*' && m.folder
+          ? `<div class="muted">📁 ${esc(folderName(m.folder))}</div>` : ''}</td>
       <td>${fmtBytes(m.size)}</td>
       <td class="muted">${fmtDateTime(m.mtime)}</td>
       <td>${m.usedIn.length
             ? m.usedIn.map((u) => `<div class="muted">${esc(u)}</div>`).join('')
             : '<span class="muted">нигде</span>'}</td>
       <td class="row-actions">
+        <button data-play="${esc(m.name)}">▶ Смотреть</button>
         <button data-copy="${esc(m.publicUrl || state.mediaBase + m.url)}">Ссылка</button>
+        <button data-movemedia="${esc(m.name)}">В папку</button>
         <button class="danger" data-delmedia="${esc(m.name)}"
                 data-used="${m.usedIn.length}">Удалить</button>
       </td>
     </tr>`).join('')}</tbody></table>`
-      : '<p class="muted">Пока ничего не загружено.</p>'}
+      : `<p class="muted">${state.media.length
+          ? 'В этой папке пока пусто.' : 'Пока ничего не загружено.'}</p>`}
   </div>`;
+}
+
+/// Просмотр прямо в панели. Ссылку берём ОТНОСИТЕЛЬНУЮ (свой origin):
+/// панель открывают и по https через Tailscale, а страница по https не имеет
+/// права тянуть http-адрес — браузер заблокирует как смешанный контент.
+function playMedia(name) {
+  const m = state.media.find((x) => x.name === name);
+  if (!m) return;
+  const kind = mediaKind(name);
+  const src = esc(m.url);
+  const body = kind === 'video'
+    ? `<video src="${src}" controls autoplay playsinline preload="metadata"></video>`
+    : kind === 'audio'
+    ? `<audio src="${src}" controls autoplay style="width:100%"></audio>`
+    : kind === 'image'
+    ? `<img src="${src}" alt="">`
+    : `<p class="muted">Этот файл браузер не показывает — откройте его
+       по ссылке ниже.</p>`;
+  const d = dialog(`
+    <h2 style="margin-top:0;word-break:break-all">${esc(name)}</h2>
+    ${body}
+    <p class="muted" style="margin:10px 0 0">${fmtBytes(m.size)} ·
+      ${fmtDateTime(m.mtime)}${m.folder ? ' · 📁 ' + esc(folderName(m.folder)) : ''}</p>
+    <div class="row-actions" style="margin-top:14px">
+      <a href="${src}" target="_blank" rel="noopener"><button>Открыть отдельно</button></a>
+      <button id="pl-close">Закрыть</button>
+    </div>`);
+  d.classList.add('wide');
+  const media = d.querySelector('video, audio');
+  // Диалог переиспользуется — без остановки звук продолжал бы играть.
+  d.addEventListener('close', () => {
+    if (media) { media.pause(); media.removeAttribute('src'); media.load(); }
+    d.classList.remove('wide');
+  }, { once: true });
+  $('#pl-close').onclick = () => d.close();
+}
+
+async function moveMedia(names, folder) {
+  const err = await postJson('/media/move', { names, folder });
+  toast(err || (folder ? `Перенесено в «${folderName(folder)}»`
+    : 'Вынуто из папки'));
+  if (!err) { mediaSel.clear(); await loadAll(); render(); }
 }
 
 async function doUpload(files) {
   const box = $('#progress');
+  const folder = $('#up-folder')?.value || '';
   for (const file of files) {
     const line = document.createElement('div');
     line.className = 'bar';
@@ -625,7 +752,7 @@ async function doUpload(files) {
     const err = await uploadFile(file, file.name, (f) => {
       fill.style.width = Math.round(f * 100) + '%';
       val.textContent = Math.round(f * 100) + '%';
-    });
+    }, folder);
     val.textContent = err ? 'ошибка' : 'готово';
     if (err) { line.querySelector('.fill').style.background = 'var(--red)'; toast(err); }
   }
@@ -681,8 +808,16 @@ function viewCourses() {
 
 /// Диалог урока: название + ссылка, выбираемая из загруженных файлов.
 function lessonDialog(lesson, onSave) {
-  const opts = state.media.map((m) =>
-    `<option value="${esc(m.publicUrl || state.mediaBase + m.url)}">${esc(m.name)} · ${fmtBytes(m.size)}</option>`).join('');
+  // Файлы группируем по папкам — с двумя сотнями уроков плоский список
+  // бесполезен.
+  const opt = (m) =>
+    `<option value="${esc(m.publicUrl || state.mediaBase + m.url)}"
+      >${esc(m.name)} · ${fmtBytes(m.size)}</option>`;
+  const group = (title, list) => list.length
+    ? `<optgroup label="${esc(title)}">${list.map(opt).join('')}</optgroup>` : '';
+  const opts = state.mediaFolders.map((f) =>
+      group(f.name, state.media.filter((m) => m.folder === f.id))).join('')
+    + group('Без папки', state.media.filter((m) => !m.folder));
   dialog(`
     <h2 style="margin-top:0">${lesson ? 'Урок' : 'Новый урок'}</h2>
     <label>Название</label>
@@ -825,8 +960,104 @@ function wire() {
     if (!confirm(`${warn}Удалить «${name}» с сервера?`)) return;
     const err = await postJson('/media/delete', { name });
     toast(err || 'Файл удалён');
+    mediaSel.delete(name);
     await loadAll(); render();
   }));
+  document.querySelectorAll('[data-play]').forEach((b) =>
+    (b.onclick = () => playMedia(b.dataset.play)));
+
+  // — Папки видео
+  document.querySelectorAll('[data-folder]').forEach((b) => (b.onclick = () => {
+    state.mediaFolder = b.dataset.folder;
+    mediaSel.clear();
+    render();
+  }));
+  const fNew = $('#folder-new');
+  if (fNew) fNew.onclick = async () => {
+    const name = prompt('Название папки:', '');
+    if (!name?.trim()) return;
+    const err = await postJson('/media/folder', { op: 'create', name: name.trim() });
+    toast(err || 'Папка создана');
+    if (!err) { await loadAll(); render(); }
+  };
+  const fRen = $('#folder-ren');
+  if (fRen) fRen.onclick = async () => {
+    const cur = state.mediaFolders.find((f) => f.id === state.mediaFolder);
+    const name = prompt('Название папки:', cur?.name || '');
+    if (!name?.trim()) return;
+    const err = await postJson('/media/folder',
+      { op: 'rename', id: state.mediaFolder, name: name.trim() });
+    toast(err || 'Переименовано');
+    if (!err) { await loadAll(); render(); }
+  };
+  const fDel = $('#folder-del');
+  if (fDel) fDel.onclick = async () => {
+    const cur = state.mediaFolders.find((f) => f.id === state.mediaFolder);
+    if (!confirm(`Удалить папку «${cur?.name}»?\n\nФайлы останутся на сервере `
+      + 'и перейдут в «Без папки» — уроки продолжат работать.')) return;
+    const err = await postJson('/media/folder', { op: 'delete', id: state.mediaFolder });
+    toast(err || 'Папка удалена');
+    if (!err) { state.mediaFolder = '*'; await loadAll(); render(); }
+  };
+  document.querySelectorAll('[data-movemedia]').forEach((b) => (b.onclick = () => {
+    const name = b.dataset.movemedia;
+    const m = state.media.find((x) => x.name === name);
+    const d = dialog(`
+      <h2 style="margin-top:0">Переложить файл</h2>
+      <p class="muted" style="word-break:break-all">${esc(name)}</p>
+      <label>Папка</label>
+      <select id="mv-folder">
+        <option value="">— без папки —</option>
+        ${state.mediaFolders.map((f) => `<option value="${esc(f.id)}"${
+          f.id === m?.folder ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}
+      </select>
+      <div class="row-actions" style="margin-top:14px">
+        <button class="primary" id="mv-ok">Переложить</button>
+        <button id="mv-cancel">Отмена</button>
+      </div>`);
+    $('#mv-cancel').onclick = () => d.close();
+    $('#mv-ok').onclick = async () => {
+      const folder = $('#mv-folder').value;
+      d.close();
+      await moveMedia([name], folder);
+    };
+  }));
+
+  // Пачка: галочки + перенос выбранных.
+  const bulk = $('#mbulk');
+  if (bulk) {
+    const boxes = [...document.querySelectorAll('[data-sel]')];
+    const sync = () => {
+      boxes.forEach((c) => (c.checked = mediaSel.has(c.dataset.sel)));
+      bulk.style.display = mediaSel.size ? 'flex' : 'none';
+      $('#mbulk-n').textContent = `Выбрано: ${mediaSel.size}`;
+      const all = $('#msel-all');
+      if (all) all.checked = boxes.length > 0 && boxes.every((c) => c.checked);
+    };
+    boxes.forEach((c) => (c.onchange = () => {
+      if (c.checked) mediaSel.add(c.dataset.sel); else mediaSel.delete(c.dataset.sel);
+      sync();
+    }));
+    const all = $('#msel-all');
+    if (all) all.onchange = () => {
+      // Отмечаем только видимые строки: поиск мог часть скрыть.
+      boxes.filter((c) => c.closest('tr').style.display !== 'none').forEach((c) => {
+        if (all.checked) mediaSel.add(c.dataset.sel); else mediaSel.delete(c.dataset.sel);
+      });
+      sync();
+    };
+    $('#mbulk-go').onclick = () => moveMedia([...mediaSel], $('#mbulk-folder').value);
+    sync();
+  }
+  // Поиск прячет строки, а не перерисовывает таблицу — так не слетают
+  // ни галочки, ни обработчики кнопок.
+  const mq = $('#mq');
+  if (mq) mq.oninput = () => {
+    const q = mq.value.trim().toLowerCase();
+    document.querySelectorAll('[data-row]').forEach((tr) => {
+      tr.style.display = tr.dataset.row.toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
 
   // — Каталог курсов
   const addDir = $('#add-dir');
