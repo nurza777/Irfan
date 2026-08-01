@@ -6,6 +6,7 @@ import '../app_state.dart';
 import '../services/zikr_service.dart';
 import '../services/lang.dart';
 import '../theme.dart';
+import 'private_zikr_section.dart';
 
 /// Настройки зикров: какие зикры и сколько раз в день. Изменения
 /// сохраняются сразу.
@@ -252,12 +253,19 @@ class _ZikrSettingsSheetState extends State<_ZikrSettingsSheet> {
                         const SizedBox(width: 8),
                         IconButton.filled(
                           style: IconButton.styleFrom(
-                              backgroundColor: AppColors.accentGreen),
+                              backgroundColor: AppColors.gold,
+                              foregroundColor: const Color(0xFF20180A)),
                           onPressed: () => _addCustom(state),
                           icon: const Icon(Icons.add),
                         ),
                       ],
                     ),
+                    const SizedBox(height: 18),
+                    Divider(color: Colors.white.withValues(alpha: 0.12)),
+                    const SizedBox(height: 10),
+                    // Закрытые зикры настраиваются здесь же: это тоже «какие
+                    // зикры и сколько», просто личные.
+                    const PrivateZikrSection(),
                   ],
                 ),
               ),

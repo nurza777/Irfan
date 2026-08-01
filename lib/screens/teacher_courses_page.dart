@@ -210,9 +210,7 @@ class _CourseCardState extends State<_CourseCard> {
                 subtitle: Text(
                   !open
                       ? t('Доступ закрыт — обратитесь к устазу')
-                      : until != null
-                          ? '${t('Доступ до')} ${fmtDateShort(until)}'
-                          : '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} ${t('урок(ов)')}',
+                      : '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} ${t('урок(ов)')}',
                   style: TextStyle(
                       fontSize: 13,
                       color: open
@@ -242,6 +240,7 @@ class _CourseCardState extends State<_CourseCard> {
                           Divider(
                               height: 1,
                               color: Colors.white.withValues(alpha: 0.1)),
+                          if (until != null) _AccessLeft(until: until),
                           for (final (j, l) in c.lessons.indexed)
                             _LessonTile(
                                 lesson: l,
@@ -262,6 +261,40 @@ class _CourseCardState extends State<_CourseCard> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Сколько осталось до конца доступа. Раньше стояла только дата окончания,
+/// и ученик считал в уме, сколько у него ещё есть; теперь сразу видно срок,
+/// а дата — уточнением рядом. Последняя неделя подсвечивается.
+class _AccessLeft extends StatelessWidget {
+  final DateTime until;
+  const _AccessLeft({required this.until});
+
+  @override
+  Widget build(BuildContext context) {
+    final left = until.difference(DateTime.now());
+    final soon = left.inDays < 7;
+    final color = soon ? Colors.orangeAccent : AppColors.goldLight;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+      child: Row(
+        children: [
+          Icon(soon ? Icons.hourglass_bottom : Icons.schedule,
+              size: 15, color: color),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              '${timeLeftText(until)} · ${t('до')} ${fmtDateShort(until)}',
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: color),
+            ),
+          ),
+        ],
       ),
     );
   }

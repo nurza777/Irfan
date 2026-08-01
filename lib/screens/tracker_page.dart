@@ -204,7 +204,7 @@ class _StreakBar extends StatelessWidget {
                   active
                       ? (appLang == Lang.ky
                           ? '$streak күн катар'
-                          : 'Серия: $streak ${_daysWord(streak)} подряд')
+                          : 'Серия: $streak ${daysWord(streak)} подряд')
                       : t('Начните серию'),
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700),
@@ -233,12 +233,6 @@ class _StreakBar extends StatelessWidget {
     );
   }
 
-  String _daysWord(int n) {
-    final m10 = n % 10, m100 = n % 100;
-    if (m10 == 1 && m100 != 11) return 'день';
-    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'дня';
-    return 'дней';
-  }
 }
 
 class _PrayerRow extends StatelessWidget {

@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import '../app_state.dart';
 import '../services/voice_service.dart';
 import '../services/lang.dart';
-import '../services/private_zikr_service.dart';
 import '../services/zikr_service.dart';
 import '../theme.dart';
 import '../widgets/glass.dart';
@@ -22,6 +21,22 @@ class ZikrPage extends StatefulWidget {
 }
 
 class _ZikrPageState extends State<ZikrPage> {
+  /// Ключи пилюль в ленте — чтобы при переключении стрелками довести
+  /// выбранный зикр до видимой части: иначе он уезжает за край и кажется,
+  /// что не выбрано ничего.
+  final _chipKeys = <String, GlobalKey>{};
+
+  void _revealSelected(String id) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _chipKeys[id]?.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(ctx,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOut,
+          alignment: 0.5);
+    });
+  }
+
   String? _selectedId;
 
   @override
@@ -38,6 +53,18 @@ class _ZikrPageState extends State<ZikrPage> {
     } else {
       HapticFeedback.lightImpact();
     }
+  }
+
+  /// Следующий или предыдущий зикр по кругу: с последнего попадаем на
+  /// первый, иначе стрелка выглядела бы сломанной на краях списка.
+  void _step(List<ZikrGoal> goals, ZikrGoal current, int delta) {
+    if (goals.length < 2) return;
+    final i = goals.indexWhere((g) => g.id == current.id);
+    final next = goals[(i + delta + goals.length) % goals.length];
+    VoiceService.instance.stop();
+    HapticFeedback.selectionClick();
+    setState(() => _selectedId = next.id);
+    _revealSelected(next.id);
   }
 
   Future<void> _confirmReset(AppState state, ZikrGoal goal) async {
@@ -104,11 +131,19 @@ class _ZikrPageState extends State<ZikrPage> {
     final done = count >= selected.target;
 
     return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      // Экран должен занимать высоту целиком: содержимого немного, и в
+      // обычном скролле оно жалось к верху, оставляя внизу пустое поле обоев.
+      // minHeight растягивает колонку на весь видимый экран, а прокрутка
+      // остаётся на случай мелкого телефона или крупного системного шрифта.
+      child: LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: box.maxHeight),
+            child: IntrinsicHeight(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
             const SizedBox(height: 16),
             FadeSlideIn(
               offset: const Offset(24, 0),
@@ -160,6 +195,7 @@ class _ZikrPageState extends State<ZikrPage> {
                     final isSel = g.id == selected.id;
                     final gDone = c >= g.target;
                     return PressableScale(
+                      key: _chipKeys.putIfAbsent(g.id, GlobalKey.new),
                       onTap: () {
                         VoiceService.instance.stop();
                         setState(() => _selectedId = g.id);
@@ -203,7 +239,7 @@ class _ZikrPageState extends State<ZikrPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 24),
+            const Spacer(flex: 2),
             Center(
               child: FadeSlideIn(
                 delay: const Duration(milliseconds: 240),
@@ -275,37 +311,55 @@ class _ZikrPageState extends State<ZikrPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 18),
-            Center(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                child: done
-                    ? Row(
-                        key: const ValueKey('done'),
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.check_circle,
-                              size: 18, color: AppColors.accentGreen),
-                          const SizedBox(width: 6),
-                          Text(t('Цель на сегодня выполнена'),
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.white
-                                      .withValues(alpha: 0.9))),
-                        ],
-                      )
-                    : Text(t('Касайтесь круга — плюс один'),
-                        key: const ValueKey('hint'),
-                        style: TextStyle(
-                            fontSize: 14,
-                            color:
-                                Colors.white.withValues(alpha: 0.6))),
-              ),
+            const SizedBox(height: 14),
+            // Стрелки под кругом листают зикры. Лента сверху для этого
+            // требует прицелиться в нужную пилюлю, а тут палец уже рядом
+            // с кругом — переключился и считаешь дальше.
+            Row(
+              children: [
+                _ArrowButton(
+                  icon: Icons.chevron_left,
+                  enabled: goals.length > 1,
+                  onTap: () => _step(goals, selected, -1),
+                ),
+                Expanded(
+                  child: Center(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: done
+                          ? Row(
+                              key: const ValueKey('done'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.check_circle,
+                                    size: 18, color: AppColors.accentGreen),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(t('Цель выполнена'),
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                          fontSize: 13.5,
+                                          color: AppColors.textSoft)),
+                                ),
+                              ],
+                            )
+                          : Text(t('Касайтесь круга — плюс один'),
+                              key: const ValueKey('hint'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  fontSize: 13.5,
+                                  color: AppColors.textFaint)),
+                    ),
+                  ),
+                ),
+                _ArrowButton(
+                  icon: Icons.chevron_right,
+                  enabled: goals.length > 1,
+                  onTap: () => _step(goals, selected, 1),
+                ),
+              ],
             ),
-            const SizedBox(height: 14),
-            // Личные обеты — под общим счётчиком, отдельным разделом.
-            const _PrivateZikrSection(),
-            const SizedBox(height: 14),
+            const Spacer(flex: 3),
             Row(
               children: [
                 PressableScale(
@@ -333,8 +387,41 @@ class _ZikrPageState extends State<ZikrPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 14),
-          ],
+                  const SizedBox(height: 14),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Круглая стрелка переключения зикра.
+class _ArrowButton extends StatelessWidget {
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+  const _ArrowButton(
+      {required this.icon, required this.enabled, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.35,
+      child: PressableScale(
+        onTap: enabled ? onTap : null,
+        child: GlassCard(
+          radius: 21,
+          blur: 10,
+          darkness: 0.2,
+          padding: EdgeInsets.zero,
+          child: SizedBox(
+            width: 42,
+            height: 42,
+            child: Icon(icon, color: AppColors.goldLight, size: 26),
+          ),
         ),
       ),
     );
@@ -433,348 +520,3 @@ class _RingPainter extends CustomPainter {
 ///
 /// В отличие от общего счётчика здесь не нажимают по разу, а вписывают
 /// сделанное числом — оно уходит из остатка, пока тот не обнулится.
-class _PrivateZikrSection extends StatelessWidget {
-  const _PrivateZikrSection();
-
-  @override
-  Widget build(BuildContext context) {
-    final state = AppScope.of(context);
-    final svc = state.privateZikrs;
-    if (svc == null) return const SizedBox.shrink();
-
-    return ListenableBuilder(
-      listenable: svc,
-      builder: (context, _) {
-        final list = svc.all;
-        final day = state.todayDate;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.lock_outline,
-                    size: 18, color: AppColors.goldLight),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(t('Закрытые зикры'),
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w700)),
-                ),
-                PressableScale(
-                  onTap: () => _edit(context, svc),
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.add_circle_outline,
-                        color: AppColors.gold),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            if (list.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                child: Text(
-                  t('Свой обет: название, сколько раз в день и когда напомнить.'),
-                  style: TextStyle(
-                      fontSize: 13,
-                      color: Colors.white.withValues(alpha: 0.6)),
-                ),
-              )
-            else
-              for (final z in list)
-                _PrivateZikrTile(
-                  zikr: z,
-                  done: svc.doneToday(day, z.id),
-                  onAdd: () => _addProgress(context, svc, day, z),
-                  onEdit: () => _edit(context, svc, existing: z),
-                ),
-          ],
-        );
-      },
-    );
-  }
-
-  /// Диалог «сколько сделал»: вписанное вычитается из остатка.
-  Future<void> _addProgress(BuildContext context, PrivateZikrService svc,
-      DateTime day, PrivateZikr z) async {
-    final left = svc.leftToday(day, z);
-    if (left == 0) {
-      final again = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: AppColors.skyBottom,
-          title: Text(t('Уже закрыт на сегодня')),
-          content: Text(t('Начать счёт заново?')),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: Text(t('Отмена'))),
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: Text(t('Сбросить'))),
-          ],
-        ),
-      );
-      if (again == true) await svc.resetToday(day, z);
-      return;
-    }
-
-    final ctrl = TextEditingController();
-    final n = await showDialog<int>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.skyBottom,
-        title: Text(z.title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('${t('Осталось')}: $left',
-                style: const TextStyle(fontSize: 15)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 26, fontWeight: FontWeight.w700),
-              decoration: InputDecoration(
-                hintText: '$left',
-                labelText: t('Сколько сделали'),
-              ),
-              onSubmitted: (v) =>
-                  Navigator.pop(ctx, int.tryParse(v.trim()) ?? 0),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, 0),
-              child: Text(t('Отмена'))),
-          // Частый случай — дочитал остаток целиком.
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, left),
-              child: Text(t('Всё'))),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(ctx, int.tryParse(ctrl.text.trim()) ?? 0),
-            child: Text(t('Записать')),
-          ),
-        ],
-      ),
-    );
-    if (n == null || n <= 0) return;
-    final rest = await svc.addProgress(day, z, n);
-    if (!context.mounted) return;
-    HapticFeedback.mediumImpact();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(rest == 0
-          ? '${z.title} — ${t('закрыт на сегодня')}'
-          : '${t('Осталось')}: $rest'),
-    ));
-  }
-
-  /// Создание и правка обета.
-  Future<void> _edit(BuildContext context, PrivateZikrService svc,
-      {PrivateZikr? existing}) async {
-    final title = TextEditingController(text: existing?.title ?? '');
-    final target =
-        TextEditingController(text: '${existing?.target ?? 100}');
-    var times = [...(existing?.reminders ?? const <ZikrReminder>[])];
-
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          backgroundColor: AppColors.skyBottom,
-          title: Text(existing == null
-              ? t('Новый закрытый зикр')
-              : t('Закрытый зикр')),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: title,
-                  decoration: InputDecoration(labelText: t('Название')),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: target,
-                  keyboardType: TextInputType.number,
-                  decoration:
-                      InputDecoration(labelText: t('Сколько раз в день')),
-                ),
-                const SizedBox(height: 14),
-                Text(t('Когда напоминать'),
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.white.withValues(alpha: 0.6))),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final (i, r) in times.indexed)
-                      InputChip(
-                        label: Text(r.label),
-                        onDeleted: () =>
-                            setLocal(() => times.removeAt(i)),
-                      ),
-                    ActionChip(
-                      avatar: const Icon(Icons.add, size: 16),
-                      label: Text(t('Время')),
-                      onPressed: () async {
-                        final picked = await showTimePicker(
-                          context: ctx,
-                          initialTime: const TimeOfDay(hour: 9, minute: 0),
-                        );
-                        if (picked != null) {
-                          setLocal(() => times.add(
-                              ZikrReminder(picked.hour, picked.minute)));
-                        }
-                      },
-                    ),
-                  ],
-                ),
-                if (times.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      t('Без времени напоминаний не будет — просто счёт.'),
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.white.withValues(alpha: 0.5)),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          actions: [
-            if (existing != null)
-              TextButton(
-                onPressed: () async {
-                  await svc.remove(existing.id);
-                  if (ctx.mounted) Navigator.pop(ctx, true);
-                },
-                child: Text(t('Удалить'),
-                    style: const TextStyle(color: Colors.redAccent)),
-              ),
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: Text(t('Отмена'))),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: Text(t('Сохранить'))),
-          ],
-        ),
-      ),
-    );
-
-    if (saved != true) return;
-    final name = title.text.trim();
-    final n = int.tryParse(target.text.trim()) ?? 0;
-    if (name.isEmpty || n <= 0) return;
-
-    if (existing == null) {
-      await svc.add(title: name, target: n, reminders: times);
-    } else {
-      await svc.update(
-          existing.copyWith(title: name, target: n, reminders: times));
-    }
-    // Напоминания меняются вместе с обетом.
-    if (context.mounted) {
-      await AppScope.of(context).rescheduleNotifications();
-    }
-  }
-}
-
-class _PrivateZikrTile extends StatelessWidget {
-  final PrivateZikr zikr;
-  final int done;
-  final VoidCallback onAdd;
-  final VoidCallback onEdit;
-  const _PrivateZikrTile({
-    required this.zikr,
-    required this.done,
-    required this.onAdd,
-    required this.onEdit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final left = (zikr.target - done).clamp(0, zikr.target);
-    final closed = left == 0;
-    final p = zikr.target == 0 ? 0.0 : done / zikr.target;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: PressableScale(
-        onTap: onAdd,
-        child: GlassCard(
-          radius: 16,
-          padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
-          child: Row(
-            children: [
-              Icon(closed ? Icons.check_circle : Icons.radio_button_unchecked,
-                  color: closed
-                      ? AppColors.accentGreen
-                      : Colors.white.withValues(alpha: 0.5),
-                  size: 22),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(zikr.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: p.clamp(0.0, 1.0),
-                        minHeight: 6,
-                        backgroundColor:
-                            Colors.white.withValues(alpha: 0.12),
-                        valueColor: AlwaysStoppedAnimation(closed
-                            ? AppColors.accentGreen
-                            : AppColors.goldLight),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      closed
-                          ? t('закрыт на сегодня')
-                          : '$done / ${zikr.target} · ${t('осталось')} $left',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.65)),
-                    ),
-                    if (zikr.reminders.isNotEmpty)
-                      Text(
-                        zikr.reminders.map((r) => r.label).join(' · '),
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: AppColors.goldLight
-                                .withValues(alpha: 0.8)),
-                      ),
-                  ],
-                ),
-              ),
-              IconButton(
-                onPressed: onEdit,
-                icon: Icon(Icons.more_horiz,
-                    color: Colors.white.withValues(alpha: 0.6), size: 20),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
