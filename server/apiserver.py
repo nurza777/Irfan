@@ -970,20 +970,42 @@ def _media_list():
         disk = {'free': du.free, 'total': du.total}
     except OSError:
         disk = {}
-    # Где файл используется — чтобы не удалить урок, который смотрят.
+    # Где файл используется — чтобы не удалить урок, который смотрят, и
+    # чтобы в панели было видно, чем файл является.
     used = {}
-    catalog = _read_json(os.path.join(ROOT, 'courses.json'), {})
-    for d in (catalog.get('directions') or []):
-        for c in (d.get('courses') or []):
-            for l in (c.get('lessons') or []):
-                url = l.get('url') or ''
-                key = url.rsplit('/', 1)[-1]
-                if key:
+    lesson_titles = {}
+
+    def _scan(dirs, prefix):
+        for d in (dirs or []):
+            if not isinstance(d, dict):
+                continue
+            for c in (d.get('courses') or []):
+                for l in (c.get('lessons') or []):
+                    # Совпадение ищем по имени файла: ссылка урока абсолютная
+                    # и может вести хоть на публичный адрес, хоть на служебный.
+                    key = (l.get('url') or '').split('?')[0].rsplit('/', 1)[-1]
+                    if not key:
+                        continue
                     used.setdefault(key, []).append(
-                        f"{d.get('title','')} / {c.get('title','')} / "
+                        f"{prefix}{d.get('title','')} / {c.get('title','')} / "
                         f"{l.get('title','')}")
+                    lesson_titles.setdefault(key, l.get('title') or '')
+
+    catalog = _read_json(os.path.join(ROOT, 'courses.json'), {})
+    # Каталог хранится по устазам; общий блок directions остался от старых
+    # публикаций. Пока живут обе формы, обходим обе — иначе связка
+    # «файл ↔ урок» теряется и все уроки выглядят непривязанными.
+    _scan(catalog.get('directions'), '')
+    for t in (catalog.get('teachers') or []):
+        if not isinstance(t, dict):
+            continue
+        name = (t.get('name') or '').strip()
+        _scan(t.get('directions'), f'{name} · ' if name else '')
     for it in items:
         it['usedIn'] = used.get(it['name'], [])
+        # Название урока — запасная подпись: файл уже опубликован, значит
+        # известно, что это, и подписывать вручную незачем.
+        it['lessonTitle'] = lesson_titles.get(it['name'], '')
     return {'items': items, 'folders': folders, 'disk': disk,
             'mediaBase': MEDIA_BASE}
 

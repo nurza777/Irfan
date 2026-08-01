@@ -663,6 +663,10 @@ function mediaKind(name) {
 const folderName = (id) =>
   state.mediaFolders.find((f) => f.id === id)?.name || '';
 
+/// Чем файл подписан: своя подпись, иначе название урока, в котором он уже
+/// опубликован — такой файл подписывать вручную незачем.
+const mediaLabel = (m) => m.title || m.lessonTitle || '';
+
 /// Выбранные галочками файлы — для переноса пачкой.
 const mediaSel = new Set();
 
@@ -733,7 +737,7 @@ function viewMedia() {
       <th>Кадр</th><th>Что это</th><th>Размер</th><th>Загружен</th>
       <th>Где используется</th><th></th>
     </tr></thead><tbody>
-    ${list.map((m) => `<tr data-row="${esc(((m.title || '') + ' ' + m.name).toLowerCase())}">
+    ${list.map((m) => `<tr data-row="${esc((mediaLabel(m) + ' ' + m.name).toLowerCase())}">
       <td class="sel"><input type="checkbox" data-sel="${esc(m.name)}"></td>
       <td class="thumb">${mediaKind(m.name) === 'video'
         ? `<img loading="lazy" src="/media/thumb?name=${encodeURIComponent(m.name)}"
@@ -743,7 +747,9 @@ function viewMedia() {
         ? `<img loading="lazy" src="${esc(m.url)}" alt="" data-play="${esc(m.name)}">`
         : `<span class="muted">${mediaKind(m.name) === 'audio' ? '🎧' : '📄'}</span>`}</td>
       <td style="max-width:300px">
-        ${m.title ? `<b style="word-break:break-word">${esc(m.title)}</b>`
+        ${mediaLabel(m)
+          ? `<b style="word-break:break-word">${esc(mediaLabel(m))}</b>${
+              !m.title && m.lessonTitle ? ' <span class="tag ok">урок</span>' : ''}`
           : '<span class="muted">без подписи</span>'}
         <div class="muted" style="word-break:break-all">${esc(m.name)}</div>
         ${cur === '*' && m.folder
@@ -751,7 +757,8 @@ function viewMedia() {
       <td>${fmtBytes(m.size)}</td>
       <td class="muted">${fmtDateTime(m.mtime)}</td>
       <td>${m.usedIn.length
-            ? m.usedIn.map((u) => `<div class="muted">${esc(u)}</div>`).join('')
+            ? `<span class="tag ok">в курсе</span>` + m.usedIn.map((u) =>
+                `<div class="muted">${esc(u)}</div>`).join('')
             : '<span class="muted">не привязан к уроку</span>'}</td>
       <td class="row-actions">
         <button data-play="${esc(m.name)}">▶ Смотреть</button>
@@ -784,10 +791,10 @@ function playMedia(name) {
     : `<p class="muted">Этот файл браузер не показывает — откройте его
        по ссылке ниже.</p>`;
   const d = dialog(`
-    <h2 style="margin-top:0;word-break:break-word">${esc(m.title || name)}</h2>
+    <h2 style="margin-top:0;word-break:break-word">${esc(mediaLabel(m) || name)}</h2>
     ${body}
     <p class="muted" style="margin:10px 0 0;word-break:break-all">
-      ${m.title ? esc(name) + ' · ' : ''}${fmtBytes(m.size)} ·
+      ${mediaLabel(m) ? esc(name) + ' · ' : ''}${fmtBytes(m.size)} ·
       ${fmtDateTime(m.mtime)}${m.folder ? ' · 📁 ' + esc(folderName(m.folder)) : ''}</p>
     ${m.usedIn.length ? `<p class="muted" style="margin:4px 0 0">Урок:
       ${m.usedIn.map(esc).join('; ')}</p>` : ''}
@@ -817,7 +824,7 @@ function titleMedia(name) {
     <h2 style="margin-top:0">Подпись к файлу</h2>
     <p class="muted" style="word-break:break-all">${esc(name)}</p>
     <label>Что это за видео</label>
-    <input id="t-val" value="${esc(m.title || '')}" maxlength="120"
+    <input id="t-val" value="${esc(mediaLabel(m))}" maxlength="120"
            placeholder="Например: Таджвид, урок 12 — правила нун сакина">
     <p class="muted">Видна только в панели: имя файла и ссылка на урок
       не меняются.</p>
@@ -933,8 +940,8 @@ function lessonDialog(lesson, onSave) {
   // бесполезен.
   const opt = (m) =>
     `<option value="${esc(m.publicUrl || state.mediaBase + m.url)}"
-      data-cap="${esc(m.title || '')}"
-      >${esc(m.title || m.name)} · ${fmtBytes(m.size)}</option>`;
+      data-cap="${esc(mediaLabel(m))}"
+      >${esc(mediaLabel(m) || m.name)} · ${fmtBytes(m.size)}</option>`;
   const group = (title, list) => list.length
     ? `<optgroup label="${esc(title)}">${list.map(opt).join('')}</optgroup>` : '';
   const opts = state.mediaFolders.map((f) =>
