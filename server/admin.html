@@ -105,6 +105,12 @@
   dialog video, dialog img { width: 100%; max-height: 68vh; border-radius: 10px; background: #000; }
   td.sel { width: 30px; }
   td.sel input { width: 16px; height: 16px; }
+  /* Кадр из ролика: двести файлов с именами tajweed-38.mp4 иначе не различить. */
+  td.thumb { width: 128px; }
+  td.thumb img {
+    width: 112px; height: 63px; object-fit: cover; display: block;
+    border-radius: 8px; background: #0d1925; cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -219,8 +225,13 @@ function uploadFile(file, name, onProgress, folder) {
     const xhr = new XMLHttpRequest();
     // Папку передаём сразу при загрузке: имя на сервере может измениться
     // (кириллица → латиница), и разложить файл вторым запросом было бы не по чему.
-    xhr.open('PUT', API + '/uploads/' + encodeURIComponent(name)
-      + (folder ? '?folder=' + encodeURIComponent(folder) : ''));
+    // Подписью по умолчанию берём исходное имя без расширения: на диске оно
+    // всё равно станет латиницей («Урок 1 — Омовение.mp4» → Urok-1-Omovenie.mp4),
+    // и без подписи файл потом не опознать.
+    const q = new URLSearchParams();
+    if (folder) q.set('folder', folder);
+    q.set('title', name.replace(/\.[^.]+$/, ''));
+    xhr.open('PUT', API + '/uploads/' + encodeURIComponent(name) + '?' + q);
     xhr.setRequestHeader('Authorization', 'Basic ' + auth);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = (e) => {
@@ -709,7 +720,7 @@ function viewMedia() {
   <div class="card">
     <h2>${active ? esc(active.name) : cur === '' ? 'Без папки' : 'Все файлы'}
       (${list.length})</h2>
-    ${state.media.length ? `<input id="mq" placeholder="Поиск по названию"
+    ${state.media.length ? `<input id="mq" placeholder="Поиск по подписи или имени файла"
         style="max-width:340px;margin-bottom:12px">` : ''}
     <div id="mbulk" class="row-actions" style="display:none;align-items:center;
          margin-bottom:12px">
@@ -717,28 +728,40 @@ function viewMedia() {
       <select id="mbulk-folder" style="max-width:240px">${folderOpts(active?.id)}</select>
       <button class="primary" id="mbulk-go">Переместить</button>
     </div>
-    ${list.length ? `<table><thead><tr>
+    ${list.length ? `<div style="overflow-x:auto"><table><thead><tr>
       <th class="sel"><input type="checkbox" id="msel-all"></th>
-      <th>Файл</th><th>Размер</th><th>Загружен</th><th>Где используется</th><th></th>
+      <th>Кадр</th><th>Что это</th><th>Размер</th><th>Загружен</th>
+      <th>Где используется</th><th></th>
     </tr></thead><tbody>
-    ${list.map((m) => `<tr data-row="${esc(m.name)}">
+    ${list.map((m) => `<tr data-row="${esc(((m.title || '') + ' ' + m.name).toLowerCase())}">
       <td class="sel"><input type="checkbox" data-sel="${esc(m.name)}"></td>
-      <td style="max-width:320px;word-break:break-all">${esc(m.name)}
+      <td class="thumb">${mediaKind(m.name) === 'video'
+        ? `<img loading="lazy" src="/media/thumb?name=${encodeURIComponent(m.name)}"
+             alt="" data-play="${esc(m.name)}"
+             onerror="this.replaceWith(document.createTextNode('🎬'))">`
+        : mediaKind(m.name) === 'image'
+        ? `<img loading="lazy" src="${esc(m.url)}" alt="" data-play="${esc(m.name)}">`
+        : `<span class="muted">${mediaKind(m.name) === 'audio' ? '🎧' : '📄'}</span>`}</td>
+      <td style="max-width:300px">
+        ${m.title ? `<b style="word-break:break-word">${esc(m.title)}</b>`
+          : '<span class="muted">без подписи</span>'}
+        <div class="muted" style="word-break:break-all">${esc(m.name)}</div>
         ${cur === '*' && m.folder
           ? `<div class="muted">📁 ${esc(folderName(m.folder))}</div>` : ''}</td>
       <td>${fmtBytes(m.size)}</td>
       <td class="muted">${fmtDateTime(m.mtime)}</td>
       <td>${m.usedIn.length
             ? m.usedIn.map((u) => `<div class="muted">${esc(u)}</div>`).join('')
-            : '<span class="muted">нигде</span>'}</td>
+            : '<span class="muted">не привязан к уроку</span>'}</td>
       <td class="row-actions">
         <button data-play="${esc(m.name)}">▶ Смотреть</button>
+        <button data-title="${esc(m.name)}">Подпись</button>
         <button data-copy="${esc(m.publicUrl || state.mediaBase + m.url)}">Ссылка</button>
         <button data-movemedia="${esc(m.name)}">В папку</button>
         <button class="danger" data-delmedia="${esc(m.name)}"
                 data-used="${m.usedIn.length}">Удалить</button>
       </td>
-    </tr>`).join('')}</tbody></table>`
+    </tr>`).join('')}</tbody></table></div>`
       : `<p class="muted">${state.media.length
           ? 'В этой папке пока пусто.' : 'Пока ничего не загружено.'}</p>`}
   </div>`;
@@ -761,11 +784,15 @@ function playMedia(name) {
     : `<p class="muted">Этот файл браузер не показывает — откройте его
        по ссылке ниже.</p>`;
   const d = dialog(`
-    <h2 style="margin-top:0;word-break:break-all">${esc(name)}</h2>
+    <h2 style="margin-top:0;word-break:break-word">${esc(m.title || name)}</h2>
     ${body}
-    <p class="muted" style="margin:10px 0 0">${fmtBytes(m.size)} ·
+    <p class="muted" style="margin:10px 0 0;word-break:break-all">
+      ${m.title ? esc(name) + ' · ' : ''}${fmtBytes(m.size)} ·
       ${fmtDateTime(m.mtime)}${m.folder ? ' · 📁 ' + esc(folderName(m.folder)) : ''}</p>
+    ${m.usedIn.length ? `<p class="muted" style="margin:4px 0 0">Урок:
+      ${m.usedIn.map(esc).join('; ')}</p>` : ''}
     <div class="row-actions" style="margin-top:14px">
+      <button class="primary" id="pl-title">Подписать</button>
       <a href="${src}" target="_blank" rel="noopener"><button>Открыть отдельно</button></a>
       <button id="pl-close">Закрыть</button>
     </div>`);
@@ -777,6 +804,40 @@ function playMedia(name) {
     d.classList.remove('wide');
   }, { once: true });
   $('#pl-close').onclick = () => d.close();
+  // Посмотрел — сразу подписал: ради этого связка и нужна.
+  $('#pl-title').onclick = () => { d.close(); titleMedia(name); };
+}
+
+/// Подпись к файлу — то, чего не хватало: имена на диске нечитаемые
+/// (транслитерация), а переименовать файл нельзя, на него ссылаются уроки.
+function titleMedia(name) {
+  const m = state.media.find((x) => x.name === name);
+  if (!m) return;
+  const d = dialog(`
+    <h2 style="margin-top:0">Подпись к файлу</h2>
+    <p class="muted" style="word-break:break-all">${esc(name)}</p>
+    <label>Что это за видео</label>
+    <input id="t-val" value="${esc(m.title || '')}" maxlength="120"
+           placeholder="Например: Таджвид, урок 12 — правила нун сакина">
+    <p class="muted">Видна только в панели: имя файла и ссылка на урок
+      не меняются.</p>
+    <div class="row-actions" style="margin-top:14px">
+      <button class="primary" id="t-ok">Сохранить</button>
+      <button id="t-cancel">Отмена</button>
+    </div>`);
+  const input = $('#t-val');
+  input.focus();
+  input.select();
+  const save = async () => {
+    const title = input.value.trim();
+    d.close();
+    const err = await postJson('/media/title', { name, title });
+    toast(err || (title ? 'Подписано' : 'Подпись убрана'));
+    if (!err) { await loadAll(); render(); }
+  };
+  input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
+  $('#t-ok').onclick = save;
+  $('#t-cancel').onclick = () => d.close();
 }
 
 async function moveMedia(names, folder) {
@@ -872,7 +933,8 @@ function lessonDialog(lesson, onSave) {
   // бесполезен.
   const opt = (m) =>
     `<option value="${esc(m.publicUrl || state.mediaBase + m.url)}"
-      >${esc(m.name)} · ${fmtBytes(m.size)}</option>`;
+      data-cap="${esc(m.title || '')}"
+      >${esc(m.title || m.name)} · ${fmtBytes(m.size)}</option>`;
   const group = (title, list) => list.length
     ? `<optgroup label="${esc(title)}">${list.map(opt).join('')}</optgroup>` : '';
   const opts = state.mediaFolders.map((f) =>
@@ -892,7 +954,13 @@ function lessonDialog(lesson, onSave) {
       <button class="primary" id="l-ok">Сохранить</button>
       <button id="l-cancel">Отмена</button>
     </div>`);
-  $('#l-pick').onchange = (e) => { if (e.target.value) $('#l-url').value = e.target.value; };
+  $('#l-pick').onchange = (e) => {
+    if (!e.target.value) return;
+    $('#l-url').value = e.target.value;
+    // Название урока подставляем из подписи файла, если своего ещё нет.
+    const t = e.target.selectedOptions[0]?.dataset.cap;
+    if (t && !$('#l-title').value.trim()) $('#l-title').value = t;
+  };
   $('#l-cancel').onclick = () => $('#dlg').close();
   $('#l-ok').onclick = () => {
     const title = $('#l-title').value.trim();
@@ -1131,6 +1199,8 @@ function wire() {
   }));
   document.querySelectorAll('[data-play]').forEach((b) =>
     (b.onclick = () => playMedia(b.dataset.play)));
+  document.querySelectorAll('[data-title]').forEach((b) =>
+    (b.onclick = () => titleMedia(b.dataset.title)));
 
   // — Папки видео
   document.querySelectorAll('[data-folder]').forEach((b) => (b.onclick = () => {

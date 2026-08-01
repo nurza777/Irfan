@@ -25,6 +25,7 @@ import os
 import secrets
 import re
 import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -81,6 +82,9 @@ _MAX_VERIFY = 5000
 RATE_WINDOW_S = 60
 RATE_ANON = 20          # анонимные POST (/users, /comments, /verify/request)
 RATE_AUTH_FAIL = 10     # неудачные попытки авторизации
+# Кадры-превью: панель открывает список из двух сотен файлов, и браузер
+# просит их пачками. Дорогая часть всё равно упирается в очередь ffmpeg.
+RATE_THUMB = 300
 
 _hits = {}              # (ключ, ip) -> [метки времени]
 _rate_lock = threading.Lock()
@@ -748,9 +752,13 @@ def _load_index():
         idx = {}
     folders = idx.get('folders')
     files = idx.get('files')
+    titles = idx.get('titles')
     return {
         'folders': folders if isinstance(folders, list) else [],
         'files': files if isinstance(files, dict) else {},
+        # Подпись к файлу. Имя вроде tajweed-37isuopz.mp4 не говорит ни о чём,
+        # а переименовать файл нельзя — по имени на него ссылаются уроки.
+        'titles': titles if isinstance(titles, dict) else {},
     }
 
 
@@ -829,21 +837,110 @@ def _media_move(data):
     return 200, {'moved': moved, 'folder': fid}
 
 
-def _assign_folder(name, fid):
-    """Кладёт только что загруженный файл в папку (тихо, без ответа)."""
-    if not fid:
+_TITLE_MAX = 120
+
+
+def _media_title(data):
+    """Подпись к файлу: чем он является. Пустая — снять подпись."""
+    name = safe_upload_name(data.get('name'))
+    if not name or not os.path.isfile(os.path.join(UPLOADS, name)):
+        return 404, {'error': 'no file'}
+    title = ' '.join(str(data.get('title') or '').split())[:_TITLE_MAX]
+    with _lock:
+        idx = _load_index()
+        if title:
+            idx['titles'][name] = title
+        else:
+            idx['titles'].pop(name, None)
+        _save_index(idx)
+    return 200, {'name': name, 'title': title}
+
+
+def _assign_upload(name, fid, title):
+    """Раскладывает только что загруженный файл: папка и подпись.
+
+    Подпись особенно важна при загрузке: имя файла на диске проходит
+    транслитерацию, и «Урок 1 — Омовение.mp4» превращается в
+    Urok-1-Omovenie.mp4. Исходное название сохраняем как подпись.
+    """
+    title = ' '.join(str(title or '').split())[:_TITLE_MAX]
+    if not fid and not title:
         return
     with _lock:
         idx = _load_index()
-        if any(f.get('id') == fid for f in idx['folders']):
+        if fid and any(f.get('id') == fid for f in idx['folders']):
             idx['files'][name] = fid
-            _save_index(idx)
+        if title:
+            idx['titles'][name] = title
+        _save_index(idx)
+
+
+# ——— Кадр-превью ———
+#
+# Двести уроков с именами вида tajweed-38.mp4 глазом не различить, поэтому
+# панель показывает по кадру из каждого ролика. Кадры складываем РЯДОМ с api/
+# (в api/ всё раздаётся списком-невидимкой, но лишнего там держать незачем) и
+# отдаём отдельной ручкой.
+THUMBS = os.path.join(os.path.dirname(ROOT), 'thumbs')
+_THUMB_EXT = ('.mp4', '.mov', '.m4v')
+# Больше двух ffmpeg разом не запускаем: на сервере 4 ядра, и на них же идут
+# эфир и выгрузка уроков.
+_thumb_sem = threading.Semaphore(2)
+
+
+def _thumb_path(name):
+    return os.path.join(THUMBS, name + '.jpg')
+
+
+def _thumb_fresh(dst, src):
+    try:
+        return os.path.getmtime(dst) >= os.path.getmtime(src)
+    except OSError:
+        return False
+
+
+def _make_thumb(name):
+    """Кадр из ролика. Возвращает путь к jpeg или None."""
+    src = os.path.join(UPLOADS, name)
+    dst = _thumb_path(name)
+    if _thumb_fresh(dst, src):
+        return dst
+    os.makedirs(THUMBS, exist_ok=True)
+    with _thumb_sem:
+        # Пока стояли в очереди, кадр мог сделать соседний запрос.
+        if _thumb_fresh(dst, src):
+            return dst
+        tmp = f'{dst}.{os.getpid()}.{threading.get_ident()}.part'
+        # -ss ДО -i — быстрая перемотка по ключевым кадрам, иначе ffmpeg
+        # честно декодирует ролик с начала. Пятая секунда: в начале урока
+        # часто заставка или чёрный кадр. Не вышло — берём самый первый кадр.
+        for seek in ('5', '0'):
+            # -f image2 обязателен: пишем во временный файл с расширением
+            # .part, по которому ffmpeg формат не угадывает и молча падает.
+            cmd = ['nice', '-n', '19', 'ffmpeg', '-v', 'error', '-y',
+                   '-ss', seek, '-i', src, '-frames:v', '1',
+                   '-vf', 'scale=320:-2', '-q:v', '6', '-f', 'image2', tmp]
+            try:
+                subprocess.run(cmd, timeout=30,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                break
+            if os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                os.replace(tmp, dst)
+                return dst
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return None
 
 
 def _media_list():
     """Загруженные файлы + папки + сколько места осталось на диске."""
     idx = _load_index()
     by_file = idx['files']
+    titles = idx['titles']
     items = []
     try:
         for name in sorted(os.listdir(UPLOADS)):
@@ -859,6 +956,7 @@ def _media_list():
                 # Абсолютная ссылка для каталога — всегда на публичный адрес.
                 'publicUrl': f'{MEDIA_BASE}/uploads/{name}',
                 'folder': by_file.get(name, ''),
+                'title': titles.get(name, ''),
             })
     except OSError:
         pass
@@ -903,12 +1001,17 @@ def _delete_media(data):
         os.remove(full)
     except OSError as e:
         return 500, {'error': str(e)}
-    # Метку папки убираем следом, иначе указатель копил бы записи о том,
-    # чего уже нет, и счётчики папок врали бы.
+    # Метку папки и подпись убираем следом, иначе указатель копил бы записи
+    # о том, чего уже нет, и счётчики папок врали бы.
     with _lock:
         idx = _load_index()
-        if idx['files'].pop(name, None) is not None:
+        gone = [idx['files'].pop(name, None), idx['titles'].pop(name, None)]
+        if any(v is not None for v in gone):
             _save_index(idx)
+    try:
+        os.remove(_thumb_path(name))
+    except OSError:
+        pass
     return 200, {'name': name, 'deleted': True}
 
 
@@ -1093,6 +1196,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    def _serve_thumb(self):
+        """Кадр-превью. Без пароля — как и сами файлы в uploads/: картинка
+        из ролика, который и так раздаётся всем, кто знает имя. Тяжёлая
+        часть (ffmpeg) закрыта очередью на два процесса и счётчиком запросов."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        name = safe_upload_name((q.get('name') or [''])[0])
+        if not name or os.path.splitext(name)[1].lower() not in _THUMB_EXT:
+            self._send_json(404, {'error': 'no preview'})
+            return
+        if not os.path.isfile(os.path.join(UPLOADS, name)):
+            self._send_json(404, {'error': 'no file'})
+            return
+        if not _rate_ok('thumb', self._ip, RATE_THUMB):
+            self._too_many()
+            return
+        path = _make_thumb(name)
+        if not path:
+            self._send_json(404, {'error': 'no preview'})
+            return
+        try:
+            with open(path, 'rb') as f:
+                body = f.read()
+        except OSError:
+            self._send_json(404, {'error': 'no preview'})
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'max-age=86400')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(code)
@@ -1145,6 +1280,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
         if p == '/media.json':
             self._send_json(200, _media_list())
+            return
+        if p == '/media/thumb':
+            self._serve_thumb()
             return
         if p == '/pending.json':
             self._send_json(200, _pending_list())
@@ -1226,13 +1364,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _confirm_code(data)
             self._send_json(code, body)
             return
-        if p in ('/media/delete', '/media/folder', '/media/move'):
+        if p in ('/media/delete', '/media/folder', '/media/move', '/media/title'):
             if self._role_checked() != 'admin':
                 self._deny()
                 return
             code, body = (
                 _delete_media(data) if p == '/media/delete'
                 else _folder_op(data) if p == '/media/folder'
+                else _media_title(data) if p == '/media/title'
                 else _media_move(data))
             self._send_json(code, body)
             return
@@ -1319,7 +1458,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # замена символов) — панели оно нужно, чтобы сразу положить файл
             # в открытую папку и показать его без перезагрузки списка.
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            _assign_folder(name, (q.get('folder') or [''])[0][:40])
+            _assign_upload(name, (q.get('folder') or [''])[0][:40],
+                           (q.get('title') or [''])[0])
             self._send_json(201, {
                 'name': name,
                 'url': f'/uploads/{name}',
