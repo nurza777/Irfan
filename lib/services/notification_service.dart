@@ -97,6 +97,10 @@ class NotificationService {
 
     final before = settings.notifyBeforeMinutes;
     final now = DateTime.now();
+    // Режим спрашиваем у системы один раз: дальше идёт до шести десятков
+    // вызовов _scheduleOne, и запрашивать разрешение в каждом — это столько
+    // же лишних обращений к платформе.
+    final mode = await _scheduleMode();
     var id = 0;
     for (var d = 0; d < days; d++) {
       final day = now.add(Duration(days: d));
@@ -106,7 +110,7 @@ class NotificationService {
         if (!prayers.contains(k)) continue;
         final when = times[k].subtract(Duration(minutes: before));
         if (!when.isAfter(now)) continue;
-        await _scheduleOne(id++, k, when, before);
+        await _scheduleOne(id++, k, when, before, mode);
         if (id >= 60) return; // iOS держит максимум ~64 запланированных
       }
     }
@@ -160,8 +164,8 @@ class NotificationService {
   }
 
   static Future<void> _scheduleOne(
-      int id, PrayerKey k, DateTime when, int before) async {
-    final mode = await _scheduleMode();
+      int id, PrayerKey k, DateTime when, int before,
+      AndroidScheduleMode mode) async {
     final name = t(k.titleRu);
     final ky = appLang == Lang.ky;
     final title = before > 0

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Цвет первого кадра при запуске. Взят как средний по верхней части
+         реального экрана приложения (#1A2A27), чтобы не было белой вспышки
+         перед тёмным интерфейсом. -->
+    <color name="launch_background">#FF1A2A27</color>
+    <!-- Фон адаптивной иконки: логотип нарисован на белом. -->
+    <color name="icon_background">#FFFFFFFF</color>
+</resources>
