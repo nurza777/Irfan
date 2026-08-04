@@ -127,8 +127,12 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
               const Icon(Icons.sms_outlined,
                   size: 56, color: AppColors.goldLight),
               const SizedBox(height: 16),
+              // Не пишем «код отправлен»: автоотправка не подключена, и
+              // человек (в том числе проверяющий из App Store) ждал бы
+              // сообщения, которое не придёт. Что произошло на самом деле,
+              // говорит строка ниже — по ответу сервера.
               Text(
-                '${t('Код отправлен на номер')}\n${widget.phone}',
+                '${t('Подтверждение номера')}\n${widget.phone}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 16, height: 1.5),
               ),

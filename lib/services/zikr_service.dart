@@ -119,35 +119,62 @@ class ZikrService {
   Future<void> increment(DateTime day, String id) async {
     final map = _readDay(day);
     map[id] = (map[id] ?? 0) + 1;
-    await _prefs.setString(_dayKey(day), jsonEncode(map));
+    await _write(day, map);
   }
 
   Future<void> reset(DateTime day, String id) async {
     final map = _readDay(day)..remove(id);
-    await _prefs.setString(_dayKey(day), jsonEncode(map));
+    await _write(day, map);
+  }
+
+  Future<void> _write(DateTime day, Map<String, int> map) async {
+    final key = _dayKey(day);
+    await _prefs.setString(key, jsonEncode(map));
+    // Сейчас пишется только сегодняшний день, но если появится правка
+    // задним числом — кэш прошлых дней обязан протухнуть.
+    if (key != _dayKey(DateTime.now())) _pastCoinsFor = null;
   }
 
   /// Коины за зикры за всю историю: каждые 33 повтора одного зикра = 1 коин.
   /// Засчитывается только в пределах дневной цели зикра, чтобы нельзя было
   /// «нафармить» коины бесконечными нажатиями сверх цели.
+  /// Коины прошлых дней уже не меняются, поэтому считаются один раз за день.
+  /// Раньше каждый тап счётчика сбрасывал кэш в AppState и хранилище
+  /// перечитывалось целиком — с каждым прожитым днём это дорожало.
+  int? _pastCoins;
+  String? _pastCoinsFor;
+
   int totalCoins() {
     final targets = {for (final g in goals) g.id: g.target};
-    var coins = 0;
-    for (final key in _prefs.getKeys()) {
-      if (!key.startsWith(_countPrefix)) continue;
-      final raw = _prefs.getString(key);
-      if (raw == null) continue;
+
+    int coinsIn(String raw) {
+      var sum = 0;
       try {
         final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
         for (final e in map.entries) {
           final count = (e.value as num).toInt();
           // Кап по дневной цели (по умолчанию 33, если цель неизвестна).
           final cap = targets[e.key] ?? 33;
-          coins += math.min(count, cap) ~/ 33;
+          sum += math.min(count, cap) ~/ 33;
         }
       } catch (_) {}
+      return sum;
     }
-    return coins;
+
+    final todayKey = _dayKey(DateTime.now());
+    if (_pastCoinsFor != todayKey) {
+      var past = 0;
+      for (final key in _prefs.getKeys()) {
+        if (!key.startsWith(_countPrefix) || key == todayKey) continue;
+        final raw = _prefs.getString(key);
+        if (raw != null) past += coinsIn(raw);
+      }
+      _pastCoins = past;
+      _pastCoinsFor = todayKey;
+    }
+
+    final todayRaw = _prefs.getString(todayKey);
+    return _pastCoins! + (todayRaw == null ? 0 : coinsIn(todayRaw));
   }
 
   /// Доля выполнения дневных целей за день, 0..1.

@@ -450,7 +450,9 @@ Future<void> showQuranNoteEditor(
       ),
     ),
   );
-  if (saved == true) await qs.setNote(surah, verse, ctrl.text);
+  final note = ctrl.text;
+  ctrl.dispose();
+  if (saved == true) await qs.setNote(surah, verse, note);
 }
 
 class _VerseAction extends StatelessWidget {

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
 import '../services/auth_service.dart';
+import '../services/chat_moderation.dart';
 import '../services/comment_service.dart';
 import '../services/live_service.dart';
 import '../services/lang.dart';
@@ -294,11 +295,12 @@ class _LiveViewState extends State<_LiveView> {
 
   Future<void> _loadComments() async {
     final list = await CommentService.fetch();
+    await ChatModeration.instance.init();
     if (!mounted) return;
     final atBottom = !_scrollCtrl.hasClients ||
         _scrollCtrl.position.pixels >=
             _scrollCtrl.position.maxScrollExtent - 40;
-    setState(() => _comments = list);
+    setState(() => _comments = ChatModeration.instance.filter(list));
     if (atBottom) _jumpToBottom();
   }
 
@@ -480,22 +482,90 @@ class _LiveViewState extends State<_LiveView> {
         final c = _comments[i];
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 5),
-          child: RichText(
-            text: TextSpan(
-              style: const TextStyle(fontSize: 14, height: 1.35),
-              children: [
-                TextSpan(
-                    text: '${c.name}  ',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.gold)),
-                TextSpan(text: c.text),
-              ],
+          // Долгое нажатие — пожаловаться или скрыть автора. Своё сообщение
+          // трогать незачем, поэтому меню на нём не открываем.
+          child: GestureDetector(
+            onLongPress: c.name == _name ? null : () => _moderationSheet(c),
+            child: RichText(
+              text: TextSpan(
+                style: const TextStyle(fontSize: 14, height: 1.35),
+                children: [
+                  TextSpan(
+                      text: '${c.name}  ',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.gold)),
+                  TextSpan(text: c.text),
+                ],
+              ),
             ),
           ),
         );
       },
     );
+  }
+
+  /// Меню жалобы и блокировки. Требование App Store к чатам: пожаловаться
+  /// и заблокировать автора можно прямо из ленты.
+  Future<void> _moderationSheet(LiveComment c) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.skyBottom,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Text('${c.name}: ${c.text}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.white.withValues(alpha: 0.6))),
+            ),
+            ListTile(
+              leading: const Icon(Icons.flag_outlined, color: Colors.orange),
+              title: Text(t('Пожаловаться')),
+              subtitle: Text(t('Администратор проверит сообщение')),
+              onTap: () => Navigator.pop(ctx, 'report'),
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.block, color: Colors.redAccent),
+              title: Text(t('Скрыть этого пользователя')),
+              subtitle: Text(t('Вы больше не увидите его сообщений')),
+              onTap: () => Navigator.pop(ctx, 'block'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.close, color: Colors.white70),
+              title: Text(t('Отмена')),
+              onTap: () => Navigator.pop(ctx),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    if (action == 'block') {
+      await ChatModeration.instance.block(c.name);
+      if (!mounted) return;
+      setState(() => _comments = ChatModeration.instance.filter(_comments));
+      messenger.showSnackBar(SnackBar(
+          content: Text(t('Сообщения этого пользователя скрыты'))));
+      return;
+    }
+    final ok = await ChatModeration.instance
+        .report(c, 'нарушение в чате эфира', by: _name);
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(
+        content: Text(ok
+            ? t('Жалоба отправлена администратору')
+            : t('Не удалось отправить жалобу — проверьте связь'))));
   }
 
   Widget _inputRow() {

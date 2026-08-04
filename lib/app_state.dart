@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 import 'services/access_service.dart';
+import 'services/account_deletion.dart';
 import 'services/auth_service.dart';
 import 'services/home_widget_service.dart';
 import 'services/lang.dart';
@@ -31,6 +32,15 @@ class AppState extends ChangeNotifier {
   ShopService? shop;
   PrivateZikrService? privateZikrs;
   DateTime now = DateTime.now();
+
+  /// Секундные часы — отдельно от состояния.
+  ///
+  /// На [AppState] подписаны полтора десятка экранов, а обратный отсчёт нужен
+  /// двум. Слушать время через них значило бы перестраивать каждую секунду
+  /// весь Коран, настройки и магазин; поэтому тик идёт сюда, а экраны берут
+  /// его через `ValueListenableBuilder`.
+  final ValueNotifier<DateTime> clock = ValueNotifier(DateTime.now());
+
   Timer? _ticker;
 
   /// Локация, найденная геолокацией (для режима «автоматически»).
@@ -92,12 +102,23 @@ class AppState extends ChangeNotifier {
     _applyLocationSetting();
     _recompute();
     _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      final prev = now;
       now = DateTime.now();
       if (today != null && (now.day != today!.date.day)) {
         _recompute();
         _rescheduleNotifications(); // новый день — обновить окно напоминаний
+        notifyListeners();
+      } else if (now.minute != prev.minute) {
+        // Раз в минуту — чтобы не застывали подсветка текущего намаза и
+        // вопрос «прочитали ли вы намаз»: с точностью до минуты этого
+        // достаточно, а рисуется в 60 раз реже.
+        notifyListeners();
       }
-      notifyListeners();
+      // Секундная стрелка идёт ОТДЕЛЬНЫМ уведомлением. Раньше здесь стоял
+      // notifyListeners() на каждый тик, и раз в секунду перестраивались все
+      // экраны под AppScope — включая Коран, настройки и магазин, которым
+      // время вообще не нужно. Обратный отсчёт слушает [clock] сам.
+      clock.value = now;
     });
     notifyListeners();
     // Локация — в фоне, чтобы не блокировать первый кадр.
@@ -316,9 +337,30 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Удаляет аккаунт и все данные человека. null — успех, иначе текст ошибки
+  /// (при ошибке данные остаются нетронутыми, см. [AccountDeletion]).
+  Future<String?> deleteAccount() async {
+    final err = await AccountDeletion.deleteCurrent(auth!);
+    if (err != null) return err;
+    AccessService.instance.clear();
+    // Пересоздаём сервисы: коины, стрики и счётчики зикров считаются из
+    // истории, а она только что стёрта — иначе на экране остались бы
+    // цифры удалённого аккаунта до перезапуска приложения.
+    auth = await AuthService.create();
+    tracker = await TrackerService.create();
+    zikrs = await ZikrService.create();
+    privateZikrs = await PrivateZikrService.create();
+    shop = await ShopService.create();
+    // Без сброса кэша чип на главном показывал бы коины удалённого аккаунта.
+    _invalidateCoins();
+    notifyListeners();
+    return null;
+  }
+
   @override
   void dispose() {
     _ticker?.cancel();
+    clock.dispose();
     super.dispose();
   }
 }

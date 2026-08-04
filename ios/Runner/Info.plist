@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -31,8 +33,14 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна, чтобы снять свой фон для приложения, а преподавателю — чтобы вести прямой эфир урока.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Геолокация нужна, чтобы определить ваш город и рассчитать время намаза.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен преподавателю, чтобы вести прямой эфир урока со звуком.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Галерея нужна, чтобы выбрать своё фото как фон приложения.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

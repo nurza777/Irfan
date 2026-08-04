@@ -640,6 +640,18 @@ class _Profile extends StatelessWidget {
                 _actionTile(context, Icons.logout, 'Выйти', null,
                     () => _confirmLogout(context, state),
                     color: Colors.redAccent),
+                Divider(
+                    height: 1,
+                    color: Colors.white.withValues(alpha: 0.1)),
+                // Требование App Store: аккаунт должен удаляться из самого
+                // приложения, а не через обращение в поддержку.
+                _actionTile(
+                    context,
+                    Icons.delete_forever_outlined,
+                    'Удалить аккаунт',
+                    'Вместе со статистикой и коинами',
+                    () => _confirmDelete(context, state),
+                    color: Colors.redAccent),
               ],
             ),
           ),
@@ -762,8 +774,9 @@ class _Profile extends StatelessWidget {
         ),
       ),
     );
+    final age = int.tryParse(ageCtrl.text.trim());
+    ageCtrl.dispose();
     if (saved == true) {
-      final age = int.tryParse(ageCtrl.text.trim());
       await state.updateProfile(
           age: (age != null && age >= 5 && age <= 120) ? age : null,
           gender: gender);
@@ -790,6 +803,38 @@ class _Profile extends StatelessWidget {
       ),
     );
     if (yes == true) await state.logoutAccount();
+  }
+
+  /// Удаление аккаунта: два подтверждения — действие необратимое, а рядом
+  /// стоит обычный «Выйти», и промахнуться легко.
+  Future<void> _confirmDelete(BuildContext context, AppState state) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.skyBottom,
+        title: Text(t('Удалить аккаунт?')),
+        content: Text(t('Будут стёрты: анкета, история намазов, счётчики '
+            'зикров, коины, закладки и заметки в Коране, доступы к курсам. '
+            'Восстановить их будет нельзя.')),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(t('Отмена'))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(t('Удалить'),
+                  style: const TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (yes != true || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final err = await state.deleteAccount();
+    messenger.showSnackBar(SnackBar(
+      content: Text(err ?? t('Аккаунт удалён')),
+      duration: Duration(seconds: err == null ? 3 : 6),
+    ));
   }
 
   Widget _section(String title, int delayMs, List<Widget> children) {

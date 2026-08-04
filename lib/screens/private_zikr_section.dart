@@ -141,6 +141,7 @@ class PrivateZikrSection extends StatelessWidget {
         ],
       ),
     );
+    ctrl.dispose();
     if (n == null || n <= 0) return;
     final rest = await svc.addProgress(day, z, n);
     if (!context.mounted) return;
@@ -250,10 +251,12 @@ class PrivateZikrSection extends StatelessWidget {
       ),
     );
 
-    if (saved != true) return;
     final name = title.text.trim();
     final n = int.tryParse(target.text.trim()) ?? 0;
-    if (name.isEmpty || n <= 0) return;
+    title.dispose();
+    target.dispose();
+
+    if (saved != true || name.isEmpty || n <= 0) return;
 
     if (existing == null) {
       await svc.add(title: name, target: n, reminders: times);

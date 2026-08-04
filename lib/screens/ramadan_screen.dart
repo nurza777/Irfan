@@ -16,9 +16,17 @@ class RamadanScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Экран целиком живёт обратным отсчётом, поэтому подписан на секундные
+    // часы напрямую — но только пока открыт (см. AppState.clock).
     final state = AppScope.of(context);
+    return ValueListenableBuilder<DateTime>(
+      valueListenable: state.clock,
+      builder: (context, now, _) => _build(context, state, now),
+    );
+  }
+
+  Widget _build(BuildContext context, AppState state, DateTime now) {
     final times = state.today!;
-    final now = state.now; // тикает раз в секунду
     final hijri = HijriCalendar.now();
     final isRamadan = hijri.hMonth == 9;
 

@@ -36,7 +36,11 @@ class TrackerService {
   Future<void> setStatus(DateTime day, PrayerKey prayer, PrayerStatus status) async {
     final map = _readDay(day);
     map[prayer.name] = status.name;
-    await _prefs.setString(_dayKey(day), jsonEncode(map));
+    final key = _dayKey(day);
+    await _prefs.setString(key, jsonEncode(map));
+    // Сейчас пишется только сегодняшний день, но если появится правка
+    // задним числом — кэш прошлых дней обязан протухнуть.
+    if (key != _dayKey(DateTime.now())) _pastReadFor = null;
   }
 
   PrayerStatus statusOf(DateTime day, PrayerKey prayer) {
@@ -75,20 +79,35 @@ class TrackerService {
 
   /// Сколько всего намазов отмечено прочитанными за всю историю
   /// (для коинов: 1 намаз = 5 баллов).
+  // Прошлые дни не меняются — считаем их один раз за день, а перечитываем
+  // только сегодняшнюю запись (см. такой же приём в ZikrService).
+  int? _pastRead;
+  String? _pastReadFor;
+
   int totalReadCount() {
-    var total = 0;
-    for (final key in _prefs.getKeys()) {
-      if (!key.startsWith(_keyPrefix)) continue;
-      final raw = _prefs.getString(key);
-      if (raw == null) continue;
+    int readIn(String raw) {
       try {
         final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
-        total += map.values
-            .where((v) => v == PrayerStatus.read.name)
-            .length;
-      } catch (_) {}
+        return map.values.where((v) => v == PrayerStatus.read.name).length;
+      } catch (_) {
+        return 0;
+      }
     }
-    return total;
+
+    final todayKey = _dayKey(DateTime.now());
+    if (_pastReadFor != todayKey) {
+      var past = 0;
+      for (final key in _prefs.getKeys()) {
+        if (!key.startsWith(_keyPrefix) || key == todayKey) continue;
+        final raw = _prefs.getString(key);
+        if (raw != null) past += readIn(raw);
+      }
+      _pastRead = past;
+      _pastReadFor = todayKey;
+    }
+
+    final todayRaw = _prefs.getString(todayKey);
+    return _pastRead! + (todayRaw == null ? 0 : readIn(todayRaw));
   }
 
   /// Все 5 намазов за день отмечены прочитанными.

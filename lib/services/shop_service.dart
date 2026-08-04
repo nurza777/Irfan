@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_config.dart';
+import 'device_key.dart';
 
 /// Товар в магазине обмена коинов (1 коин = 1 сом).
 class ShopItem {
@@ -17,13 +18,19 @@ class ShopItem {
       this.id, this.title, this.subtitle, this.cost, this.icon);
 }
 
+/// Награды — только вещи, которые устаз выдаёт на руки.
+///
+/// Скидка на курсы убрана намеренно: это цифровой товар внутри приложения,
+/// а такое Apple разрешает продавать только через встроенные покупки
+/// (Guideline 3.1.1). Вещь, которую человек забирает у устаза, под это
+/// правило не подпадает.
 const shopItems = <ShopItem>[
   ShopItem('tasbih', 'Тасбих', 'Чётки для зикра — 500 сом', 500,
       Icons.blur_circular),
   ShopItem('book', 'Книга', 'Исламская книга — 700 сом', 700,
       Icons.menu_book_outlined),
-  ShopItem('course', 'Скидка на курсы', 'Скидка 1000 сом на курсы', 1000,
-      Icons.school_outlined),
+  ShopItem('mat', 'Намазлык', 'Коврик для намаза — 1000 сом', 1000,
+      Icons.grid_view_rounded),
 ];
 
 /// Запись о выкупе награды.
@@ -95,6 +102,7 @@ class ShopService {
     final int status;
     try {
       final base = await ApiConfig.base();
+      final secret = await DeviceKey.get();
       final r = await http
           .post(
             Uri.parse('$base/redeem'),
@@ -102,6 +110,7 @@ class ShopService {
             body: utf8.encode(jsonEncode({
               'phone': phone,
               'itemId': item.id,
+              if (secret.isNotEmpty) 'secret': secret,
             })),
           )
           .timeout(const Duration(seconds: 8));

@@ -5,6 +5,7 @@ import '../services/lang.dart';
 import '../services/prayer_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import 'staff/staff_home.dart';
 import 'wallpaper_sheet.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
@@ -183,6 +184,26 @@ class SettingsScreen extends StatelessWidget {
                         trailing: const Icon(Icons.chevron_right,
                             color: Colors.white54),
                         onTap: () => showWallpaperSheet(context),
+                      ),
+                      Divider(
+                          height: 1,
+                          color: Colors.white.withValues(alpha: 0.1)),
+                      // Кабинет устаза открыт всем, но пускает только по
+                      // логину и паролю от администратора: отдельного
+                      // приложения для преподавателей больше нет.
+                      ListTile(
+                        leading: const Icon(Icons.school_outlined,
+                            color: AppColors.gold),
+                        title: Text(t('Кабинет устаза')),
+                        subtitle: Text(
+                            t('Эфир, курсы и новости — для преподавателей'),
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.white
+                                    .withValues(alpha: 0.6))),
+                        trailing: const Icon(Icons.chevron_right,
+                            color: Colors.white54),
+                        onTap: () => StaffHome.open(context),
                       ),
                       Divider(
                           height: 1,

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'access_service.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
+import 'device_key.dart';
 
 /// Реестр аккаунтов на сервере: приложение сообщает профиль студента (БЕЗ
 /// пароля), чтобы админ в приложении устаза видел, кто зарегистрировался, и
@@ -24,6 +25,9 @@ class UserRegistry {
   }) async {
     try {
       final base = await ApiConfig.base();
+      // Ключ устройства: им сервер отличает владельца записи от постороннего,
+      // знающего номер (см. DeviceKey).
+      final secret = await DeviceKey.get();
       final r = await http
           .post(
             Uri.parse('$base/users'),
@@ -33,6 +37,7 @@ class UserRegistry {
               'name': u.name,
               // Опознаватель аккаунта — номер телефона; почты больше нет.
               'phone': u.phone,
+              if (secret.isNotEmpty) 'secret': secret,
               'gender': u.gender.name,
               'age': u.age,
               if (u.city.isNotEmpty) 'city': u.city,

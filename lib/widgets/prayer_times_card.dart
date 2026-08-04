@@ -19,15 +19,7 @@ class PrayerTimesCard extends StatelessWidget {
     final times = state.today!;
     final hhmm = DateFormat('HH:mm');
     final current = times.currentAt(state.now);
-    final (nextKey, nextTime) = state.nextPrayer();
-    final left = nextTime.difference(state.now);
-
-    String countdown() {
-      final h = left.inHours.toString().padLeft(2, '0');
-      final m = (left.inMinutes % 60).toString().padLeft(2, '0');
-      final s = (left.inSeconds % 60).toString().padLeft(2, '0');
-      return '$h:$m:$s';
-    }
+    final (nextKey, _) = state.nextPrayer();
 
     return GlassCard(
       radius: 22,
@@ -124,14 +116,28 @@ class PrayerTimesCard extends StatelessWidget {
                             fontSize: 17, fontWeight: FontWeight.w700),
                       ),
                     ),
-                    Text(
-                      countdown(),
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                        color: AppColors.cream,
-                      ),
+                    // Единственное место карточки, которое меняется каждую
+                    // секунду: перестраивается только эта строка, а не весь
+                    // экран (см. AppState.clock).
+                    ValueListenableBuilder<DateTime>(
+                      valueListenable: state.clock,
+                      builder: (_, tick, __) {
+                        final left = state.nextPrayer().$2.difference(tick);
+                        final h = left.inHours.toString().padLeft(2, '0');
+                        final m =
+                            (left.inMinutes % 60).toString().padLeft(2, '0');
+                        final s =
+                            (left.inSeconds % 60).toString().padLeft(2, '0');
+                        return Text(
+                          '$h:$m:$s',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                            color: AppColors.cream,
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),

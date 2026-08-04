@@ -19,6 +19,8 @@ import 'news_screen.dart';
 import 'account_screen.dart';
 import 'azkar_screen.dart';
 import 'courses_page.dart';
+import '../services/staff_auth.dart';
+import 'staff/staff_home.dart';
 import 'qibla_page.dart';
 import 'ramadan_screen.dart';
 import 'settings_screen.dart';
@@ -102,6 +104,21 @@ class _RootScreenState extends State<RootScreen> {
         } else if (screen == 'courses') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const CoursesPage()));
+        } else if (screen == 'staff') {
+          // `staff` или `staff:<номер вкладки>`.
+          StaffHome.open(context,
+              initialTab: int.tryParse(reciterArg ?? '') ?? 0);
+        } else if (screen == 'staff_login') {
+          // `staff_login:<логин>:<пароль>` — вход в кабинет без клавиатуры:
+          // в симуляторе печатать нечем, а проверить надо весь путь
+          // (сеть → токен → Keychain → вкладки).
+          StaffAuth.instance
+              .login(reciterArg ?? '', parts.length > 2 ? parts[2] : '')
+              .then((err) {
+            debugPrint('STAFF_LOGIN result=${err ?? 'ok'} '
+                'session=${StaffAuth.instance.session?.login}');
+            if (err == null && mounted) StaffHome.open(context);
+          });
         } else if (screen == 'quran_dl') {
           // Проверка оффлайн-загрузки: качаем аль-Фатиху и печатаем итог.
           final qs = AppScope.of(context).quran!;
