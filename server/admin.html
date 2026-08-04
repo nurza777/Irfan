@@ -176,6 +176,19 @@ async function postJson(path, body) {
   return r.ok ? null : `Сервер ответил ${r.status}`;
 }
 
+/// Как postJson, но возвращает текст ошибки от сервера: на учётках он
+/// осмысленный («логин занят», «пароль — минимум 8 символов»).
+async function staffOp(body) {
+  const r = await api('/staff', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) return null;
+  const j = await r.json().catch(() => null);
+  return j?.error || `Сервер ответил ${r.status}`;
+}
+
 async function putJson(path, body) {
   const r = await api(path, {
     method: 'PUT',
@@ -267,13 +280,15 @@ const state = {
   mediaBase: '',
   // Устазы: реестр и заявки на каталог (у каждого своя).
   teachers: [],
+  // Учётки для входа устаза в приложение (логин + пароль, заводит админ).
+  staff: [],
   coursesRaw: {},
   teacherId: '',
   pendingCourses: [],
 };
 
 async function loadAll() {
-  const [users, access, codes, courses, media, teachers, queue, pn, pa] =
+  const [users, access, codes, courses, media, teachers, queue, pn, pa, staff] =
     await Promise.all([
       getJson('/users.json', []),
       getJson('/access.json', []),
@@ -284,8 +299,10 @@ async function loadAll() {
       getJson('/pending.json', { pending: [] }),
       getJson('/news_pending.json', null),
       getJson('/azkar_pending.json', null),
+      getJson('/staff.json', { staff: [] }),
     ]);
   state.teachers = teachers?.teachers || [];
+  state.staff = staff?.staff || [];
   state.coursesRaw = courses || {};
   // Полные заявки — по файлу на устаза; список выше даёт только сводку.
   state.pendingCourses = (await Promise.all(
@@ -1041,10 +1058,44 @@ function viewTeachers() {
   }).join('');
   return `<div class="card">
       <h2>Устазы</h2>
-      <p class="muted">Устаз заводится сам, войдя в своё приложение. Пока вы
-        не одобрили его, ученики в разделе «Курсы» его не видят.</p>
+      <p class="muted">Устаз появляется здесь, когда вы заводите ему учётку
+        ниже, — сразу видимым ученикам. Записи со статусом «на проверке»
+        остались от прежнего порядка, когда устаз регистрировался сам.</p>
       <p>Всего: ${list.length} · на проверке: ${waiting}</p>
-    </div>${rows || '<div class="card"><p class="muted">Реестр пуст.</p></div>'}`;
+    </div>${viewStaff()}${rows || '<div class="card"><p class="muted">Реестр пуст.</p></div>'}`;
+}
+
+/// Учётки для входа устаза в приложение. Раньше пароль публикации был один
+/// на всех и лежал в сборке; в приложении из App Store так нельзя — каждый
+/// устаз входит своим логином и получает токен только на свои права.
+function viewStaff() {
+  const rows = state.staff.map((s) => `<tr>
+      <td><b>${esc(s.login)}</b>${s.disabled ? ' <span class="tag bad">отключён</span>' : ''}</td>
+      <td>${esc(s.name || '')}</td>
+      <td class="muted">${fmtDate(s.createdAt)}</td>
+      <td class="row-actions">
+        <button data-staffpw="${esc(s.login)}">Сменить пароль</button>
+        <button data-staffoff="${esc(s.login)}|${s.disabled ? 'enable' : 'disable'}">
+          ${s.disabled ? 'Включить' : 'Отключить'}</button>
+        <button class="danger" data-staffdel="${esc(s.login)}">Удалить</button>
+      </td>
+    </tr>`).join('');
+  return `<div class="card">
+    <h2>Учётки для входа в приложение</h2>
+    <p class="muted">Логин и пароль устаз вводит в приложении, в разделе
+      «Кабинет устаза». Отключение и смена пароля мгновенно обрывают вход
+      на всех его устройствах.</p>
+    <div class="row-actions" style="margin:10px 0">
+      <input id="staff-login" placeholder="логин (латиница)" style="max-width:180px">
+      <input id="staff-name" placeholder="имя устаза" style="max-width:220px">
+      <input id="staff-pass" type="text" placeholder="пароль (от 8 символов)" style="max-width:220px">
+      <button class="primary" id="staff-add">Завести</button>
+    </div>
+    ${state.staff.length
+      ? `<table><thead><tr><th>Логин</th><th>Имя</th><th>Заведён</th><th></th></tr></thead>
+         <tbody>${rows}</tbody></table>`
+      : '<p class="muted">Учёток пока нет.</p>'}
+  </div>`;
 }
 
 // — Модерация
@@ -1167,6 +1218,39 @@ function wire() {
     q.oninput = draw;
     draw();
   }
+  // — Учётки устазов
+  const staffAdd = $('#staff-add');
+  if (staffAdd) staffAdd.onclick = async () => {
+    const login = $('#staff-login').value.trim().toLowerCase();
+    const name = $('#staff-name').value.trim();
+    const pass = $('#staff-pass').value;
+    const err = await staffOp({ op: 'create', login, name, password: pass });
+    toast(err || `Учётка «${login}» заведена`);
+    if (!err) { await loadAll(); render(); }
+  };
+  document.querySelectorAll('[data-staffpw]').forEach((b) => (b.onclick = async () => {
+    const login = b.dataset.staffpw;
+    const pass = prompt(`Новый пароль для «${login}» (от 8 символов):`, '');
+    if (!pass) return;
+    const err = await staffOp({ op: 'password', login, password: pass });
+    toast(err || 'Пароль изменён — устазу нужно войти заново');
+    if (!err) { await loadAll(); render(); }
+  }));
+  document.querySelectorAll('[data-staffoff]').forEach((b) => (b.onclick = async () => {
+    const [login, op] = b.dataset.staffoff.split('|');
+    const err = await staffOp({ op, login });
+    toast(err || (op === 'disable' ? 'Вход закрыт' : 'Вход открыт'));
+    if (!err) { await loadAll(); render(); }
+  }));
+  document.querySelectorAll('[data-staffdel]').forEach((b) => (b.onclick = async () => {
+    const login = b.dataset.staffdel;
+    if (!confirm(`Удалить учётку «${login}»?\n\nОпубликованные им уроки `
+      + 'останутся в каталоге — их убирают отдельно, в разделе «Курсы».')) return;
+    const err = await staffOp({ op: 'delete', login });
+    toast(err || 'Учётка удалена');
+    if (!err) { await loadAll(); render(); }
+  }));
+
   document.querySelectorAll('[data-rv]').forEach((b) => (b.onclick = async () => {
     const [email, scope, ...rest] = b.dataset.rv.split('|');
     const err = await postJson('/access/revoke', { phone: email, scope, key: rest.join('|') });

@@ -6,6 +6,12 @@
           студентов, коды выкупа;
   ustaz — только заявки на модерацию (*_pending.json) и загрузка файлов.
 
+Персональные учётки устазов (/etc/irfan/staff.json, заводит админ) —
+вход по POST /auth/token, дальше `Authorization: Bearer <токен>`. Нужны
+потому, что приложение стало публичным: зашитый в сборку общий пароль
+вытаскивается из бинарника любым скачавшим. Токен привязан к своему
+teacherId — устаз пишет только собственную заявку на каталог.
+
 GET  — всем, кроме путей с ПДн (users.json, redemptions.json) — только admin.
 PUT  — по ролям (см. _put_role_for).
 POST /comments   — чат эфира от студентов (без пароля);
@@ -31,7 +37,12 @@ import time
 import urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'api')
-AUTH_FILE = '/etc/irfan/auth.json'
+AUTH_FILE = os.environ.get('IRFAN_AUTH_FILE', '/etc/irfan/auth.json')
+# Персональные учётки устазов и данные публикации эфира — рядом с auth.json,
+# вне репозитория и вне раздаваемого каталога. Пути переопределяются через
+# окружение, чтобы прогонять сервер локально, не трогая боевые файлы.
+STAFF_FILE = os.environ.get('IRFAN_STAFF_FILE', '/etc/irfan/staff.json')
+STREAM_FILE = os.environ.get('IRFAN_STREAM_FILE', '/etc/irfan/stream.json')
 COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
@@ -41,17 +52,30 @@ TEACHERS = os.path.join(ROOT, 'teachers.json')
 # раздаётся по HTTP, и копия users.json стала бы публичной.
 VERSIONS = os.path.join(os.path.dirname(ROOT), 'versions')
 VERIFY = os.path.join(ROOT, 'verifications.json')
+REPORTS = os.path.join(ROOT, 'reports.json')
+# Выданные токены — тоже СОСЕДНИЙ файл: внутри api/ он раздавался бы по HTTP.
+TOKENS = os.path.join(os.path.dirname(ROOT), 'tokens.json')
 _MAX_COMMENTS = 200
+_MAX_REPORTS = 2000
+
+# Корни грубой брани. Первая группа ловится с приставками («нахуй»,
+# «заебал»), вторая — только с начала слова: иначе «барсука» и «сукно»
+# попадали бы под «сука». Список заведомо неполный, см. _mask_profanity.
+_PROFANITY_RE = re.compile(
+    r'\w*(?:хуй|хуё|хуе|пизд|ебат|ебал|ебан|еблан|бляд|блять|мудак|мудил'
+    r'|гандон|долбоёб|долбоеб|пидор|пидар|ублюд|шлюх|fuck|cunt)\w*'
+    r'|\b(?:сука|сучка|говно|shit|bitch)\w*', re.IGNORECASE)
 _MAX_USERS = 10000
 _MAX_REDEMPTIONS = 20000
 _MAX_TEACHERS = 500
 
 # Пути с ПДн — GET только для админа.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
-                  '/verifications.json', '/media.json', '/pending.json')
+                  '/verifications.json', '/media.json', '/pending.json',
+                  '/staff.json', '/reports.json')
 # Хеш пароля админа: не ПДн, но и не для публики — брутфорсится офлайн.
 # Достаточно любой роли: приложение устаза читает его до входа админом.
-_AUTHED_GET = ('/admin.json',)
+_AUTHED_GET = ('/admin.json', '/stream.json')
 
 # Что можно писать устазу: только заявки на модерацию и загрузки.
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
@@ -65,12 +89,22 @@ _PENDING_RE = re.compile(r'^/courses_pending_[0-9a-f]{6,32}\.json$')
 SHOP_ITEMS = {
     'tasbih': 500,
     'book': 700,
+    'mat': 1000,
+    # Скидка на курсы убрана из приложения (цифровой товар мимо встроенных
+    # покупок Apple), но id оставлен: по нему приходят уже выданные коды.
     'course': 1000,
 }
 MAX_COINS = 1000
 COINS_PER_PRAYER = 5
 # Потолок за сутки: 5 намазов по 5 коинов + запас на зикры.
 MAX_COINS_PER_DAY = 55
+
+# Персональные учётки устазов и токены входа.
+PBKDF2_ITER = 120_000
+TOKEN_TTL_MS = 30 * 24 * 3600 * 1000   # месяц, продлевается при обращении
+_MAX_TOKENS = 500
+_MAX_STAFF = 200
+_LOGIN_RE = re.compile(r'^[a-z0-9._-]{3,32}$')
 
 # Подтверждение телефона кодом.
 CODE_TTL_MS = 10 * 60 * 1000     # код живёт 10 минут
@@ -133,13 +167,252 @@ def _load_auth():
 _AUTH = _load_auth()
 
 
-def _role(headers):
-    """Роль запроса: 'admin' | 'ustaz' | None. Сравнение — постоянного времени."""
+def _pw_hash(password, salt=None, iters=PBKDF2_ITER):
+    """PBKDF2-HMAC-SHA256. Формат строки — `pbkdf2$итерации$соль$хеш`."""
+    salt = salt or secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iters)
+    return 'pbkdf2${}${}${}'.format(
+        iters, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+
+
+def _pw_verify(password, stored):
+    try:
+        algo, iters, salt_b64, dk_b64 = str(stored).split('$')
+        if algo != 'pbkdf2':
+            return False
+        want = base64.b64decode(dk_b64)
+        got = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'),
+                                  base64.b64decode(salt_b64), int(iters))
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(got, want)
+
+
+def _write_private(path, obj):
+    """Пишет JSON так, чтобы файл не читался никем, кроме владельца."""
+    tmp = path + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _load_staff():
+    v = _read_json(STAFF_FILE, [])
+    return [s for s in v if isinstance(s, dict)] if isinstance(v, list) else []
+
+
+def _save_staff(items):
+    _write_private(STAFF_FILE, items)
+
+
+def _find_staff(items, login):
+    return next((s for s in items if s.get('login') == login), None)
+
+
+def _load_tokens():
+    v = _read_json(TOKENS, {})
+    return v if isinstance(v, dict) else {}
+
+
+def _save_tokens(items):
+    _write_private(TOKENS, items)
+
+
+def _token_key(token):
+    """В файле лежит только хеш: утечка tokens.json не даёт войти."""
+    return hashlib.sha256(('irfan-token:' + token).encode()).hexdigest()
+
+
+def _issue_token(rec):
+    now = int(time.time() * 1000)
+    token = secrets.token_urlsafe(32)
+    with _lock:
+        items = _load_tokens()
+        # Заодно чистим протухшие, иначе файл растёт до бесконечности.
+        items = {k: v for k, v in items.items()
+                 if isinstance(v, dict) and (v.get('exp') or 0) > now}
+        if len(items) >= _MAX_TOKENS:
+            oldest = sorted(items.items(), key=lambda kv: kv[1].get('exp') or 0)
+            for k, _ in oldest[:len(items) - _MAX_TOKENS + 1]:
+                items.pop(k, None)
+        items[_token_key(token)] = {
+            'login': rec.get('login'),
+            'role': rec.get('role') or 'ustaz',
+            'teacherId': rec.get('teacherId'),
+            'name': rec.get('name'),
+            'created': now,
+            'exp': now + TOKEN_TTL_MS,
+        }
+        _save_tokens(items)
+    return token, now + TOKEN_TTL_MS
+
+
+def _token_principal(token):
+    """Кто стоит за токеном, либо None. Просроченный токен не пускает."""
+    if not token:
+        return None
+    key = _token_key(token)
+    now = int(time.time() * 1000)
+    items = _load_tokens()
+    rec = items.get(key)
+    if not isinstance(rec, dict) or (rec.get('exp') or 0) <= now:
+        return None
+    # Учётку могли отключить или удалить уже после выдачи токена.
+    staff = _find_staff(_load_staff(), rec.get('login'))
+    if staff is None or staff.get('disabled'):
+        return None
+    return {'role': rec.get('role') or 'ustaz', 'login': rec.get('login'),
+            'teacherId': rec.get('teacherId'), 'name': rec.get('name'),
+            'exp': rec.get('exp')}
+
+
+def _revoke_token(token):
+    key = _token_key(token or '')
+    with _lock:
+        items = _load_tokens()
+        if items.pop(key, None) is None:
+            return False
+        _save_tokens(items)
+        return True
+
+
+def _auth_token(data):
+    """Вход устаза по логину и паролю. Возвращает (код, тело)."""
+    login = str(data.get('login') or '').strip().lower()
+    password = str(data.get('password') or '')
+    if not login or not password:
+        return 400, {'error': 'no credentials'}
+    rec = _find_staff(_load_staff(), login)
+    # Пароль проверяем даже для несуществующего логина: иначе по времени
+    # ответа видно, какие логины заведены.
+    stored = (rec or {}).get('pass') or _pw_hash('-')
+    ok = _pw_verify(password, stored)
+    if rec is None or not ok or rec.get('disabled'):
+        return 401, {'error': 'bad credentials'}
+    token, exp = _issue_token(rec)
+    return 200, {
+        'token': token,
+        'login': login,
+        'role': rec.get('role') or 'ustaz',
+        'teacherId': rec.get('teacherId'),
+        'name': rec.get('name') or login,
+        'expiresAt': exp,
+    }
+
+
+def _staff_op(data):
+    """Управление учётками устазов из веб-панели (только админ)."""
+    op = str(data.get('op') or '').strip()
+    login = str(data.get('login') or '').strip().lower()
+    if op not in ('create', 'password', 'disable', 'enable', 'delete'):
+        return 400, {'error': 'bad op'}
+    if not _LOGIN_RE.match(login):
+        return 400, {'error': 'логин: 3–32 символа, латиница, цифры, . _ -'}
+    password = str(data.get('password') or '')
+    if op in ('create', 'password') and len(password) < 8:
+        return 400, {'error': 'пароль — минимум 8 символов'}
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_staff()
+        rec = _find_staff(items, login)
+        if op == 'create':
+            if rec is not None:
+                return 409, {'error': 'логин занят'}
+            if len(items) >= _MAX_STAFF:
+                return 507, {'error': 'staff full'}
+            rec = {
+                'login': login,
+                'name': (str(data.get('name') or '').strip()[:60] or login),
+                'role': 'ustaz',
+                'teacherId': _teacher_id(login),
+                'pass': _pw_hash(password),
+                'createdAt': now,
+            }
+            items.append(rec)
+        elif rec is None:
+            return 404, {'error': 'no staff'}
+        elif op == 'password':
+            rec['pass'] = _pw_hash(password)
+            rec['passwordChangedAt'] = now
+        elif op in ('disable', 'enable'):
+            rec['disabled'] = (op == 'disable')
+        elif op == 'delete':
+            items = [s for s in items if s.get('login') != login]
+        _save_staff(items)
+    # Отключение и удаление должны гасить уже выданные токены немедленно.
+    if op in ('disable', 'delete', 'password'):
+        with _lock:
+            toks = {k: v for k, v in _load_tokens().items()
+                    if not (isinstance(v, dict) and v.get('login') == login)}
+            _save_tokens(toks)
+    if op == 'create':
+        # Заводим и запись в реестре устазов, сразу одобренную: логин выдал
+        # админ, отдельная модерация здесь ничего не добавляет.
+        _upsert_teacher({'login': login, 'name': rec.get('name')})
+        _set_teacher_status({'id': rec.get('teacherId'), 'status': 'approved'})
+        return 201, {'login': login, 'teacherId': rec.get('teacherId'),
+                     'name': rec.get('name')}
+    return 200, {'login': login, 'op': op}
+
+
+def _staff_list():
+    """Список учёток для панели — без хешей паролей."""
+    return {'staff': [{
+        'login': s.get('login'),
+        'name': s.get('name'),
+        'teacherId': s.get('teacherId'),
+        'disabled': bool(s.get('disabled')),
+        'createdAt': s.get('createdAt'),
+    } for s in _load_staff()]}
+
+
+def _stream_config():
+    """Адрес и учётка публикации эфира — отдаются только вошедшему персоналу.
+
+    Раньше ключ потока был константой в сборке приложения устаза. В публичном
+    приложении так нельзя: узнав ключ, посторонний вклинится в эфир.
+    """
+    cfg = _read_json(STREAM_FILE, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    key = cfg.get('key')
+    if not key:
+        # Файла с настройками эфира нет. Раньше здесь стоял прежний ключ
+        # потока — в репозитории ему не место, да и молча подставлять
+        # нерабочую учётку хуже, чем честно сказать «не настроено».
+        return None
+    user, password = cfg.get('user'), cfg.get('pass')
+    # MediaMTX принимает учётку прямо в RTMP-URL, а плагин на телефоне
+    # умеет только «адрес + ключ» — поэтому логин едет хвостом ключа.
+    if user and password:
+        key = '{}?user={}&pass={}'.format(
+            key, urllib.parse.quote(user), urllib.parse.quote(password))
+    return {
+        'rtmpUrl': cfg.get('rtmpUrl') or 'rtmp://178.104.206.100/live',
+        'streamKey': key,
+    }
+
+
+def _principal(headers):
+    """Кто делает запрос: dict с role/login/teacherId, либо None.
+
+    Поддерживаются оба способа: общий basic-auth (веб-панель, заливка с
+    ноутбука) и персональный bearer-токен устаза из приложения.
+    """
     got = headers.get('Authorization', '')
+    if got.startswith('Bearer '):
+        return _token_principal(got[len('Bearer '):].strip())
     for hdr, role in _AUTH.items():
         if secrets.compare_digest(got, hdr):
-            return role
+            return {'role': role, 'login': role, 'teacherId': None,
+                    'name': role}
     return None
+
+
+def _role(headers):
+    """Роль запроса: 'admin' | 'ustaz' | None. Сравнение — постоянного времени."""
+    return (_principal(headers) or {}).get('role')
 
 
 # Куда вообще можно писать. Раньше админский PUT принимал любой путь внутри
@@ -197,10 +470,33 @@ def _read_json(path, default):
         return default
 
 
+def _mask_profanity(text):
+    """Закрывает звёздочками грубую брань в чате эфира.
+
+    Список заведомо неполный — обойти его несложно. Он и не задуман как
+    защита: это обязательный для App Store фильтр очевидного (Guideline 1.2),
+    работающий вместе с жалобой на сообщение и блокировкой автора. Убирает
+    самое грубое до того, как его увидят дети на уроке.
+    """
+    def cover(m):
+        w = m.group(0)
+        return w[0] + '*' * (len(w) - 1)
+    return _PROFANITY_RE.sub(cover, text)
+
+
+def _is_teacher_name(name):
+    """Совпадает ли имя с кем-то из реестра преподавателей."""
+    n = (name or '').strip().lower()
+    if not n:
+        return False
+    return any((t.get('name') or '').strip().lower() == n
+               for t in _load_teachers())
+
+
 def _add_comment(name, text):
     """Добавляет комментарий зрителя в comments.json, возвращает его или None."""
     name = (name or '').strip()[:40] or 'Гость'
-    text = (text or '').strip()[:300]
+    text = _mask_profanity((text or '').strip()[:300])
     if not text:
         return None
     now = int(time.time() * 1000)
@@ -605,6 +901,49 @@ def _pending_list():
     return {'pending': out}
 
 
+def _auth_key(secret):
+    """Хеш секрета устройства. В файле лежит только он — утечка users.json
+    не даёт писать от имени ученика."""
+    s = str(secret or '')
+    if len(s) < 16:
+        return ''
+    return hashlib.sha256(('irfan-device:' + s).encode()).hexdigest()
+
+
+def _student_ok(rec, data):
+    """Имеет ли запрос право менять эту запись ученика.
+
+    Пароля у ученика нет: аккаунт живёт на телефоне, а сервер знает только
+    номер. Поэтому приложение заводит секрет устройства (Keychain) и шлёт
+    его при каждом обращении; сервер хранит хеш.
+
+    Записи, заведённые до этого (у них нет `authKey`), забираются по точной
+    дате создания аккаунта: её знает только само приложение, а по номеру
+    её не угадать. Совсем старые записи без `accountCreatedAt` достаются
+    первому, кто пришёл с ключом, — иначе их владельцы не смогли бы
+    пользоваться приложением после обновления.
+    """
+    got = _auth_key(data.get('secret'))
+    have = rec.get('authKey')
+    if have:
+        return bool(got) and secrets.compare_digest(got, have)
+    if not got:
+        return True          # старое приложение без ключа — пускаем как раньше
+    created = rec.get('accountCreatedAt')
+    try:
+        claimed = int(data.get('createdAt') or 0)
+    except (ValueError, TypeError):
+        claimed = 0
+    if created and claimed != created:
+        # Дату создания знает только само приложение. Требуем её и когда её
+        # в запросе нет вовсе: иначе запись забирал бы кто угодно через
+        # ручку, где эта дата не передаётся (например, /redeem). Настоящее
+        # приложение всё равно первым делом шлёт профиль в POST /users.
+        return False
+    rec['authKey'] = got     # запись закрепляется за этим устройством
+    return True
+
+
 def _upsert_user(data):
     """Заводит/обновляет запись студента по email (без пароля). Возвращает
     запись (с флагом blocked, который мог поставить админ) или None."""
@@ -639,6 +978,12 @@ def _upsert_user(data):
             rec = {'phone': ident, 'blocked': False, 'registeredAt': now,
                    'spent': 0}
             users.append(rec)
+            # Первый пришедший закрепляет запись за своим устройством.
+            _student_ok(rec, data)
+        elif not _student_ok(rec, data):
+            # Чужая попытка переписать анкету: раньше это удавалось любому,
+            # кто знал номер (менялись имя, город, возраст).
+            return {'error': 'forbidden'}
         # Дата создания аккаунта в приложении — база для анти-накрутки.
         # Ставится один раз и только в допустимом диапазоне.
         if 'accountCreatedAt' not in rec:
@@ -672,6 +1017,8 @@ def _upsert_user(data):
         rec.setdefault('verified', False)
         _save_users(users)
         out = dict(rec)
+    # Ключ устройства наружу не отдаём — он нужен только серверу.
+    out.pop('authKey', None)
     # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
     out['access'] = _access_for(ident)
     return out
@@ -1071,6 +1418,76 @@ def _delete_user(data):
         return 200, {'student': ident, 'deleted': True}
 
 
+def _report_comment(data):
+    """Жалоба ученика на сообщение в чате эфира (Guideline 1.2).
+
+    Копится в reports.json; читает его только админ — в панели видно, на что
+    жалуются, и можно закрыть автору вход. Сообщение при этом СРАЗУ прячется
+    у пожаловавшегося: блокировка хранится на его устройстве и не ждёт
+    разбора.
+    """
+    author = (data.get('author') or '').strip()[:40]
+    text = (data.get('text') or '').strip()[:300]
+    reason = (data.get('reason') or '').strip()[:80]
+    if not text:
+        return 400, {'error': 'empty'}
+    now = int(time.time() * 1000)
+    item = {'id': now, 'author': author, 'text': text, 'reason': reason,
+            'ts': now, 'by': (data.get('by') or '').strip()[:40]}
+    with _lock:
+        items = _read_json(REPORTS, [])
+        if not isinstance(items, list):
+            items = []
+        items.append(item)
+        items = items[-_MAX_REPORTS:]
+        _keep_backup(REPORTS)
+        with open(REPORTS, 'w', encoding='utf-8') as f:
+            json.dump(items, f, ensure_ascii=False)
+    return 201, {'ok': True}
+
+
+def _delete_account(data):
+    """Ученик удаляет свой аккаунт из приложения (требование App Store 5.1.1).
+
+    Убирает запись из реестра, выданные доступы и коды подтверждения. Коды
+    выкупа остаются: это финансовые следы уже полученных наград, и по ним
+    не опознать человека (в них только код и товар).
+
+    Удалять может только владелец записи — тот, чей ключ устройства в ней
+    записан (см. [_student_ok]): иначе знающий номер стирал бы чужие
+    аккаунты вместе с оплаченными доступами к курсам.
+    """
+    ident = _norm_phone(data.get('phone')) or str(
+        data.get('phone') or '').strip().lower()
+    if not ident:
+        return 400, {'error': 'no phone'}
+    removed = False
+    with _lock:
+        users = _load_users()
+        rec = _find_user(users, ident)
+        if rec is not None and not _student_ok(rec, data):
+            return 403, {'error': 'forbidden'}
+        # У записи ученика опознаватель лежит в `phone` (или в `email` у
+        # заведённых старыми сборками) — не в `student`, как у доступов.
+        rest = [u for u in users
+                if u.get('phone') != ident and u.get('email') != ident]
+        removed = len(rest) != len(users)
+        if removed:
+            _save_users(rest)
+        # Доступы к курсам и коды подтверждения — вместе с записью.
+        grants = _load_access()
+        keep = [g for g in grants if not _same_student(g, ident)]
+        if len(keep) != len(grants):
+            _keep_backup(ACCESS)
+            with open(ACCESS, 'w', encoding='utf-8') as f:
+                json.dump(keep, f, ensure_ascii=False)
+        codes = _load_verify()
+        left = [c for c in codes if _norm_phone(c.get('phone')) != ident]
+        if len(left) != len(codes):
+            _save_verify(left)
+    return 200, {'deleted': removed}
+
+
 def _redeem(data):
     """Обмен коинов на награду. Баланс считает и код выдаёт сервер.
 
@@ -1091,6 +1508,10 @@ def _redeem(data):
             return 404, {'error': 'no user'}
         if rec.get('blocked'):
             return 403, {'error': 'blocked'}
+        # Тратить коины может только владелец записи: без этого посторонний,
+        # знающий номер, выкупал бы чужие награды себе.
+        if not _student_ok(rec, data):
+            return 403, {'error': 'forbidden'}
         balance = max(0, _earned_coins(rec, now) - int(rec.get('spent') or 0))
         if balance < cost:
             return 409, {'error': 'not enough', 'balance': balance}
@@ -1260,19 +1681,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     @property
     def _ip(self):
-        # nginx впереди пока нет, поэтому адрес берём с сокета. Когда
-        # появится прокси, здесь понадобится X-Forwarded-For (и доверять
-        # ему можно будет только от самого прокси).
-        return self.client_address[0]
+        """Адрес клиента с учётом обратного прокси.
 
-    def _role_checked(self):
-        """Роль запроса с защитой от перебора пароля."""
-        role = _role(self.headers)
-        if role is None and self.headers.get('Authorization'):
+        После включения HTTPS запросы приходят от nginx с localhost. Без
+        этой поправки ВСЕ посетители слились бы в один счётчик: перебор
+        пароля перестал бы ловиться, а чужой спам блокировал бы всех
+        сразу. Заголовку доверяем только от самого прокси — иначе его
+        подделает кто угодно и обойдёт ограничения.
+        """
+        peer = self.client_address[0]
+        if peer in ('127.0.0.1', '::1'):
+            fwd = (self.headers.get('X-Forwarded-For') or '').split(',')
+            first = fwd[0].strip()
+            if first:
+                return first
+        return peer
+
+    def _principal_checked(self):
+        """Кто делает запрос, с защитой от перебора пароля.
+
+        Возвращает dict, None (не авторизован) или строку 'ratelimited'.
+        """
+        who = _principal(self.headers)
+        if who is None and self.headers.get('Authorization'):
             # Считаем только неудачные попытки — успешные не наказываем.
             if not _rate_ok('authfail', self._ip, RATE_AUTH_FAIL):
                 return 'ratelimited'
-        return role
+        return who
+
+    def _role_checked(self):
+        """Роль запроса с защитой от перебора пароля."""
+        who = self._principal_checked()
+        if who == 'ratelimited':
+            return 'ratelimited'
+        return (who or {}).get('role')
 
     def _deny(self, code=401):
         self.send_response(code)
@@ -1303,6 +1745,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == '/media.json':
             self._send_json(200, _media_list())
             return
+        if p == '/staff.json':
+            self._send_json(200, _staff_list())
+            return
+        if p == '/stream.json':
+            cfg = _stream_config()
+            self._send_json(200 if cfg else 503,
+                            cfg or {'error': 'эфир не настроен на сервере'})
+            return
         if p == '/media/thumb':
             self._serve_thumb()
             return
@@ -1315,7 +1765,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
-                  '/redeem', '/teachers')
+                  '/redeem', '/teachers', '/auth/token', '/account/delete',
+                  '/comments/report')
 
     def do_POST(self):
         p = self.path.rstrip('/')
@@ -1330,6 +1781,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(400, {'error': 'bad json'})
             return
         if p == '/comments':
+            # Имя в чате приходит от клиента, и без проверки любой мог бы
+            # писать от лица преподавателя. Имена из реестра устазов
+            # разрешаем только вошедшему персоналу.
+            if _is_teacher_name(data.get('name')) and \
+                    self._role_checked() not in ('admin', 'ustaz'):
+                self._send_json(403, {'error': 'имя занято преподавателем'})
+                return
             item = _add_comment(data.get('name'), data.get('text'))
             if item is None:
                 self._send_json(400, {'error': 'empty'})
@@ -1340,6 +1798,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             rec = _upsert_user(data)
             if rec is None:
                 self._send_json(400, {'error': 'bad email'})
+                return
+            if rec.get('error') == 'forbidden':
+                self._send_json(403, rec)
                 return
             if rec.get('error'):
                 self._send_json(507, rec)
@@ -1368,15 +1829,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _redeem(data)
             self._send_json(code, body)
             return
-        if p == '/auth/check':
-            role = self._role_checked()
-            if role == 'ratelimited':
+        if p == '/comments/report':
+            code, body = _report_comment(data)
+            self._send_json(code, body)
+            return
+        if p == '/account/delete':
+            code, body = _delete_account(data)
+            self._send_json(code, body)
+            return
+        if p == '/auth/token':
+            # Неудачный вход тратит лимит перебора, удачный — нет.
+            code, body = _auth_token(data)
+            if code != 200 and not _rate_ok('authfail', self._ip,
+                                            RATE_AUTH_FAIL):
                 self._too_many()
                 return
-            if role is None:
+            self._send_json(code, body)
+            return
+        if p == '/auth/logout':
+            got = self.headers.get('Authorization', '')
+            if got.startswith('Bearer '):
+                _revoke_token(got[len('Bearer '):].strip())
+            self._send_json(200, {'ok': True})
+            return
+        if p == '/auth/check':
+            who = self._principal_checked()
+            if who == 'ratelimited':
+                self._too_many()
+                return
+            if who is None:
                 self._deny()
                 return
-            self._send_json(200, {'role': role})
+            self._send_json(200, {'role': who.get('role'),
+                                  'login': who.get('login'),
+                                  'teacherId': who.get('teacherId'),
+                                  'name': who.get('name'),
+                                  'expiresAt': who.get('exp')})
+            return
+        if p == '/staff':
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            code, body = _staff_op(data)
+            self._send_json(code, body)
             return
         if p == '/verify/request':
             code, body = _request_code(data)
@@ -1433,18 +1928,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not _put_allowed(self.path):
             self._send_json(403, {'error': 'path not writable'})
             return
-        role = self._role_checked()
-        if role == 'ratelimited':
+        who = self._principal_checked()
+        if who == 'ratelimited':
             self._too_many()
             return
-        if role is None:
+        if who is None:
             self._deny()
             return
+        role = who.get('role')
         need = _put_role_for(self.path)
         # admin может всё; ustaz — только то, что помечено 'ustaz'.
         if need == 'admin' and role != 'admin':
             self._send_json(403, {'error': 'admin only'})
             return
+        # Устаз с персональным токеном пишет ТОЛЬКО свою заявку на каталог:
+        # иначе, войдя под своей учёткой, он мог бы затереть чужую.
+        if who.get('teacherId'):
+            p = self.path.split('?')[0]
+            own = '/courses_pending_{}.json'.format(who['teacherId'])
+            if (_PENDING_RE.match(p) or p == '/courses_pending.json') \
+                    and p != own:
+                self._send_json(403, {'error': 'чужая заявка'})
+                return
         # Имя файла в uploads чистим сами: каталог раздаётся всем, и
         # заливать туда что попало (или уходить вверх по дереву) нельзя.
         raw = self.path.split('?')[0]
@@ -1494,4 +1999,5 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    http.server.ThreadingHTTPServer(('0.0.0.0', 8090), Handler).serve_forever()
+    port = int(os.environ.get('IRFAN_PORT', '8090'))
+    http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
