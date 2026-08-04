@@ -112,7 +112,17 @@ Play отдельно просит **URL для запроса на удален
       в работе, только собрано и разобрано статически
 - [ ] После перехода на домен — удалить `network_security_config.xml` и
       ссылку на него в манифесте
-- [ ] Собрать `flutter build appbundle --release` (Play принимает AAB, не APK)
+- [ ] Собрать `flutter build appbundle --release` (Play принимает AAB, не APK).
+      **Осторожно с ложной ошибкой:** команда заканчивается словами «Release
+      app bundle failed to strip debug symbols from native libraries» и
+      ненулевым кодом, хотя бандл собран и лежит в
+      `build/app/outputs/bundle/release/app-release.aab`. Gradle рапортует
+      `BUILD SUCCESSFUL`; падает пост-проверка — Flutter зовёт `apkanalyzer`
+      из cmdline-tools, тот не находит build-tools
+      (`IllegalStateException: Cannot locate latest build tools`) и пишет в
+      stderr, а Flutter считает это провалом. Проверять надо сам файл, а не
+      код возврата. Размеры: бандл целиком 143 МБ (три архитектуры), но Play
+      отдаёт телефону одну — около 49 МБ плюс ресурсы.
 - [ ] Шапка 1024×500
 - [ ] Скриншоты, снятые на Android
 - [ ] Анкеты: безопасность данных, возрастной рейтинг, целевая аудитория
