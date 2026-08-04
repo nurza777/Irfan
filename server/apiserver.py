@@ -57,6 +57,13 @@ REPORTS = os.path.join(ROOT, 'reports.json')
 TOKENS = os.path.join(os.path.dirname(ROOT), 'tokens.json')
 _MAX_COMMENTS = 200
 _MAX_REPORTS = 2000
+# Потолок тела POST-запроса: там всегда небольшой JSON (анкета, комментарий,
+# заявка). Загрузка уроков идёт через PUT и этим потолком не ограничена.
+_MAX_POST_BYTES = 256 * 1024
+# Потолки для PUT: урок — большой файл (самый тяжёлый из залитых 787 МБ),
+# JSON-документы каталога и новостей — заведомо мелкие.
+_MAX_UPLOAD_BYTES = 4 * 1024 ** 3
+_MAX_JSON_PUT_BYTES = 8 * 1024 * 1024
 
 # Корни грубой брани. Первая группа ловится с приставками («нахуй»,
 # «заебал»), вторая — только с начала слова: иначе «барсука» и «сукно»
@@ -1695,12 +1702,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         подделает кто угодно и обойдёт ограничения.
         """
         peer = self.client_address[0]
-        if peer in ('127.0.0.1', '::1'):
-            fwd = (self.headers.get('X-Forwarded-For') or '').split(',')
-            first = fwd[0].strip()
-            if first:
-                return first
-        return peer
+        if peer not in ('127.0.0.1', '::1'):
+            return peer
+        # X-Real-IP прокси ставит сам, затирая присланное клиентом, — ему
+        # верить можно.
+        real = (self.headers.get('X-Real-IP') or '').strip()
+        if real:
+            return real
+        # Запасной путь — X-Forwarded-For, и берём ПОСЛЕДНИЙ элемент: nginx
+        # дописывает настоящий адрес в конец, а начало списка присылает сам
+        # клиент. Если брать первый (как было сначала), любой подставит себе
+        # новый адрес на каждый запрос — ограничение частоты перестанет
+        # работать вовсе, и заодно можно испортить счётчик чужому.
+        fwd = [p.strip() for p in
+               (self.headers.get('X-Forwarded-For') or '').split(',')
+               if p.strip()]
+        return fwd[-1] if fwd else peer
 
     def _principal_checked(self):
         """Кто делает запрос, с защитой от перебора пароля.
@@ -1778,11 +1795,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p in self._ANON_POST and not _rate_ok('anon', self._ip, RATE_ANON):
             self._too_many()
             return
-        n = int(self.headers.get('Content-Length', 0) or 0)
-        raw = self.rfile.read(n) if n else b''
+        # Тело POST — это всегда небольшой JSON. Раньше оно читалось целиком
+        # по заявленной длине: любой прохожий мог объявить Content-Length в
+        # гигабайты и съесть память сервера, ничего не отправляя по существу.
+        try:
+            n = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            self._send_json(400, {'error': 'bad length'})
+            return
+        if n > _MAX_POST_BYTES:
+            self._send_json(413, {'error': 'too large'})
+            return
+        raw = self.rfile.read(n) if n > 0 else b''
         try:
             data = json.loads(raw.decode('utf-8')) if raw else {}
-        except ValueError:
+        except (ValueError, UnicodeDecodeError):
+            self._send_json(400, {'error': 'bad json'})
+            return
+        if not isinstance(data, dict):
+            # Дальше везде вызывается data.get(...) — на списке или строке
+            # это падало бы с 500 вместо внятного отказа.
             self._send_json(400, {'error': 'bad json'})
             return
         if p == '/comments':
@@ -1983,7 +2015,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # модерации затирает live-файл целиком, и ошибочная публикация
         # иначе безвозвратно уносит то, что было опубликовано раньше.
         _keep_backup(path)
-        n = int(self.headers.get('Content-Length', 0))
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            self._send_json(400, {'error': 'bad length'})
+            return
+        # Потолок на размер. Диск 150 ГБ и общий на всё: уроки, эфир, копии.
+        # Без предела один запрос (свой по ошибке или чужой с утёкшим
+        # токеном) забивает его целиком, и тогда встаёт и эфир, и раздача.
+        limit = _MAX_UPLOAD_BYTES if upload else _MAX_JSON_PUT_BYTES
+        if n > limit:
+            self._send_json(413, {'error': 'too large'})
+            return
         remaining, chunk = n, 1 << 20
         with open(path, 'wb') as f:
             while remaining > 0:
