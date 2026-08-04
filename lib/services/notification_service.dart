@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -39,6 +41,25 @@ class NotificationService {
   }
 
   /// Спрашивает системное разрешение на уведомления. true — разрешено.
+  /// Насколько точно Android разрешает будить приложение.
+  ///
+  /// Неточный режим система вправе сдвинуть на десятки минут — для азана это
+  /// и есть смысл функции, поэтому просим точный, а откатываемся только если
+  /// разрешения нет. На iOS значение ни на что не влияет.
+  static Future<AndroidScheduleMode> _scheduleMode() async {
+    if (!Platform.isAndroid) return AndroidScheduleMode.exactAllowWhileIdle;
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      final exact = await android?.canScheduleExactNotifications() ?? false;
+      return exact
+          ? AndroidScheduleMode.exactAllowWhileIdle
+          : AndroidScheduleMode.inexactAllowWhileIdle;
+    } catch (_) {
+      return AndroidScheduleMode.inexactAllowWhileIdle;
+    }
+  }
+
   static Future<bool> requestPermission() async {
     await init();
     final ios = _plugin.resolvePlatformSpecificImplementation<
@@ -96,6 +117,7 @@ class NotificationService {
   static Future<void> _scheduleZikrs(
       PrivateZikrService svc, int days) async {
     final now = DateTime.now();
+    final mode = await _scheduleMode();
     var id = 10000;
     for (final z in svc.all) {
       for (final r in z.reminders) {
@@ -124,7 +146,7 @@ class NotificationService {
                 ),
                 iOS: DarwinNotificationDetails(),
               ),
-              androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+              androidScheduleMode: mode,
               uiLocalNotificationDateInterpretation:
                   UILocalNotificationDateInterpretation.absoluteTime,
             );
@@ -139,6 +161,7 @@ class NotificationService {
 
   static Future<void> _scheduleOne(
       int id, PrayerKey k, DateTime when, int before) async {
+    final mode = await _scheduleMode();
     final name = t(k.titleRu);
     final ky = appLang == Lang.ky;
     final title = before > 0
@@ -169,7 +192,7 @@ class NotificationService {
             interruptionLevel: InterruptionLevel.timeSensitive,
           ),
         ),
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        androidScheduleMode: mode,
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );

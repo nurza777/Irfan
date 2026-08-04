@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Подпись Android-релиза — только локально, в репозиторий не кладём.
+android/key.properties
+*.jks
+*.keystore
