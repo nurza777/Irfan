@@ -182,7 +182,7 @@ after the teacher taps "Включить камеру". Regular users never see 
 or microphone prompt. If you would like to inspect it, use:
 
   login: review
-  password: Review-XtPoIyK9ss
+  password: ⟨ПАРОЛЬ_РЕВЬЮ⟩
 
 This account is for review only and is hidden from students.
 
@@ -228,7 +228,10 @@ in "Аккаунт" → "Удалить аккаунт" (visible once signed in)
 
 Уже сделано:
 
-- [x] Учётка устаза для ревью заведена (`review`, скрыта от учеников)
+- [x] Учётка устаза для ревью заведена (`review`, скрыта от учеников).
+      **Пароль в этот файл не пишем** — репозиторий публичный, а из истории
+      git его потом не вычистить. Подставляйте прямо в App Store Connect;
+      если забыли — задайте новый в панели: Устазы → Сменить пароль.
 - [x] Скриншоты сняты — `store/screenshots-6.9/`
 - [x] Тексты витрины на русском и кыргызском
 - [x] `ITSAppUsesNonExemptEncryption` = false в Info.plist

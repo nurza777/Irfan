@@ -70,12 +70,17 @@ _MAX_REDEMPTIONS = 20000
 _MAX_TEACHERS = 500
 
 # Пути с ПДн — GET только для админа.
+#
+# admin.json (хеш пароля админа) раньше был доступен ЛЮБОЙ роли: приложение
+# устаза читало его, чтобы проверить скрытый вход админа у себя на телефоне.
+# Того приложения больше нет, а хеш брутфорсится офлайн — то есть любой устаз
+# мог унести его и спокойно подбирать пароль. Теперь только админ; сам файл
+# ничем уже не читается и его можно удалить с сервера.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
                   '/verifications.json', '/media.json', '/pending.json',
-                  '/staff.json', '/reports.json')
-# Хеш пароля админа: не ПДн, но и не для публики — брутфорсится офлайн.
-# Достаточно любой роли: приложение устаза читает его до входа админом.
-_AUTHED_GET = ('/admin.json', '/stream.json')
+                  '/staff.json', '/reports.json', '/admin.json')
+# Данные публикации эфира — любому вошедшему устазу, это его рабочий ключ.
+_AUTHED_GET = ('/stream.json',)
 
 # Что можно писать устазу: только заявки на модерацию и загрузки.
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
@@ -1765,7 +1770,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
-                  '/redeem', '/teachers', '/auth/token', '/account/delete',
+                  '/redeem', '/auth/token', '/account/delete',
                   '/comments/report')
 
     def do_POST(self):
@@ -1808,6 +1813,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json(201, rec)
             return
         if p == '/teachers':
+            # Раньше сюда мог писать кто угодно: так устаз заводил себя сам.
+            # Учётки теперь выдаёт админ, а открытая ручка осталась дырой —
+            # ею можно было засорить реестр и добить его до потолка в 500
+            # записей, после чего настоящий устаз уже не заводился.
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
             rec = _upsert_teacher(data)
             if rec is None:
                 self._send_json(400, {'error': 'bad phone'})
