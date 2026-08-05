@@ -282,13 +282,16 @@ const state = {
   teachers: [],
   // Учётки для входа устаза в приложение (логин + пароль, заводит админ).
   staff: [],
+  // Сбои приложения, сгруппированные по виду ошибки.
+  crashes: [],
   coursesRaw: {},
   teacherId: '',
   pendingCourses: [],
 };
 
 async function loadAll() {
-  const [users, access, codes, courses, media, teachers, queue, pn, pa, staff] =
+  const [users, access, codes, courses, media, teachers, queue, pn, pa, staff,
+         crashes] =
     await Promise.all([
       getJson('/users.json', []),
       getJson('/access.json', []),
@@ -300,9 +303,13 @@ async function loadAll() {
       getJson('/news_pending.json', null),
       getJson('/azkar_pending.json', null),
       getJson('/staff.json', { staff: [] }),
+      getJson('/crashes.json', []),
     ]);
   state.teachers = teachers?.teachers || [];
   state.staff = staff?.staff || [];
+  // Свежие сверху: чинить надо то, что падает сейчас.
+  state.crashes = (Array.isArray(crashes) ? crashes : [])
+    .slice().sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   state.coursesRaw = courses || {};
   // Полные заявки — по файлу на устаза; список выше даёт только сводку.
   state.pendingCourses = (await Promise.all(
@@ -378,6 +385,7 @@ const TABS = [
   ['access', 'Доступы', viewAccess],
   ['codes', 'Коды', viewCodes],
   ['moderation', 'Модерация', viewModeration],
+  ['crashes', 'Сбои', viewCrashes],
 ];
 let tab = 'stats';
 
@@ -1096,6 +1104,45 @@ function viewStaff() {
          <tbody>${rows}</tbody></table>`
       : '<p class="muted">Учёток пока нет.</p>'}
   </div>`;
+}
+
+// — Сбои приложения
+
+/// Падения, собранные с телефонов. Складываются по видам: одна и та же
+/// ошибка у сотни человек — одна строка со счётчиком, иначе в списке
+/// ничего не разглядеть.
+function viewCrashes() {
+  const list = state.crashes;
+  if (!list.length) {
+    return `<div class="card"><h2>Сбои</h2>
+      <p class="muted">Пусто — приложение ни разу не падало (или сборка на
+      телефонах ещё без отправки сбоев).</p></div>`;
+  }
+  const total = list.reduce((s, c) => s + (c.count || 0), 0);
+  const day = Date.now() - 864e5;
+  const fresh = list.filter((c) => (c.lastSeen || 0) > day).length;
+  const cards = list.map((c) => `<div class="card">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <h2 style="margin:0;flex:1;font-size:16px">${esc(c.error)}</h2>
+        ${c.fatal ? '<span class="tag bad">падение</span>' : '<span class="tag warn">ошибка</span>'}
+        <span class="tag">${c.count || 1}&nbsp;раз</span>
+      </div>
+      <p class="muted">${fmtDateTime(c.lastSeen)} · последний случай
+        ${c.version ? ' · версия ' + esc(c.version) : ''}
+        ${c.platform ? ' · ' + esc(c.platform) : ''}</p>
+      ${c.stack ? `<pre style="white-space:pre-wrap;font-size:11px;line-height:1.4;
+        max-height:180px;overflow:auto;opacity:.75;margin:6px 0 0">${esc(c.stack)}</pre>` : ''}
+    </div>`).join('');
+  return `<div class="card">
+      <h2>Сбои</h2>
+      <p class="muted">Приложение присылает только текст ошибки, стек, версию
+        и систему — ни номера, ни имени.</p>
+      <div class="kpis">
+        <div class="kpi"><b>${list.length}</b><span>видов</span></div>
+        <div class="kpi"><b>${total}</b><span>случаев</span></div>
+        <div class="kpi"><b>${fresh}</b><span>за сутки</span></div>
+      </div>
+    </div>${cards}`;
 }
 
 // — Модерация

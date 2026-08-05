@@ -4,12 +4,16 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_state.dart';
+import 'services/crash_reporter.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/root_screen.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Ставим до всего остального: падение на старте — самое ценное, что
+  // хочется увидеть, и раньше его не видел никто.
+  CrashReporter.install();
   // Все экраны свёрстаны под портрет; альбомная ориентация нужна ровно в
   // одном месте — в полноэкранном плеере урока, и он включает её сам.
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);

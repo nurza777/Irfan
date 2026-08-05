@@ -1,0 +1,57 @@
+# Проверки на каждый коммит. Раньше анализатор и тесты гонялись, только
+# когда кто-то вспомнит, — то есть регрессия доезжала до телефона.
+#
+# Сборку iOS сюда не ставим намеренно: ей нужен macOS-раннер и подпись, это
+# долго и дорого, а ломается она обычно не от правок в Dart. Android-сборка
+# на обычном раннере ловит поломки gradle и манифеста — этого достаточно.
+name: Проверки
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  flutter:
+    name: Анализатор и тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  server:
+    name: Проверки сервера
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # 70 проверок: токены устаза, ключ устройства ученика, потолки
+      # размера, подписанные ссылки на уроки. Каждый набор поднимает свою
+      # копию сервера, боевой не трогается.
+      - run: bash server/tests/run.sh
+
+  android:
+    name: Сборка Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # Не 26: Gradle её не понимает и падает с невнятным сообщением.
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --debug

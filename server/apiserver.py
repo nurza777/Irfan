@@ -56,10 +56,15 @@ TEACHERS = os.path.join(ROOT, 'teachers.json')
 VERSIONS = os.path.join(os.path.dirname(ROOT), 'versions')
 VERIFY = os.path.join(ROOT, 'verifications.json')
 REPORTS = os.path.join(ROOT, 'reports.json')
+CRASHES = os.path.join(ROOT, 'crashes.json')
 # Выданные токены — тоже СОСЕДНИЙ файл: внутри api/ он раздавался бы по HTTP.
 TOKENS = os.path.join(os.path.dirname(ROOT), 'tokens.json')
 _MAX_COMMENTS = 200
 _MAX_REPORTS = 2000
+# Сбоев храним по видам, а не по случаям: одна и та же ошибка у
+# сотни человек — это одна строка со счётчиком, иначе список
+# забивается и в нём ничего не видно.
+_MAX_CRASHES = 300
 # Потолок тела POST-запроса: там всегда небольшой JSON (анкета, комментарий,
 # заявка). Загрузка уроков идёт через PUT и этим потолком не ограничена.
 _MAX_POST_BYTES = 256 * 1024
@@ -92,7 +97,8 @@ _MAX_TEACHERS = 500
 # ничем уже не читается и его можно удалить с сервера.
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
                   '/verifications.json', '/media.json', '/pending.json',
-                  '/staff.json', '/reports.json', '/admin.json')
+                  '/staff.json', '/reports.json', '/admin.json',
+                  '/crashes.json')
 # Данные публикации эфира — любому вошедшему устазу, это его рабочий ключ.
 _AUTHED_GET = ('/stream.json',)
 
@@ -1509,6 +1515,54 @@ def _media_link(data, staff):
     }
 
 
+def _crash_report(data):
+    """Сбой в приложении. Складываем по видам: одинаковые ошибки — одна
+    запись со счётчиком и датой последнего случая.
+
+    Личных данных здесь нет и быть не должно: только текст ошибки, стек,
+    версия приложения и система. Ни номера, ни имени приложение не шлёт.
+    """
+    error = (data.get('error') or '').strip()[:400]
+    if not error:
+        return 400, {'error': 'empty'}
+    stack = (data.get('stack') or '').strip()[:4000]
+    version = (data.get('version') or '').strip()[:40]
+    platform = (data.get('platform') or '').strip()[:40]
+    fatal = bool(data.get('fatal'))
+    now = int(time.time() * 1000)
+    # Вид сбоя: текст ошибки плюс первая строка стека — этого хватает,
+    # чтобы одинаковые падения слиплись, а разные не смешались.
+    head = stack.split('\n', 1)[0][:200]
+    kind = hashlib.sha256(f'{error}|{head}'.encode()).hexdigest()[:16]
+
+    with _lock:
+        items = _read_json(CRASHES, [])
+        if not isinstance(items, list):
+            items = []
+        rec = next((c for c in items
+                    if isinstance(c, dict) and c.get('kind') == kind), None)
+        if rec is None:
+            if len(items) >= _MAX_CRASHES:
+                # Вытесняем самый давний по последнему случаю, а не по
+                # порядку добавления: старая, но живая ошибка важнее.
+                items.sort(key=lambda c: c.get('lastSeen') or 0)
+                items = items[1:]
+            rec = {'kind': kind, 'error': error, 'stack': stack,
+                   'firstSeen': now, 'count': 0}
+            items.append(rec)
+        rec['count'] = int(rec.get('count') or 0) + 1
+        rec['lastSeen'] = now
+        if version:
+            rec['version'] = version
+        if platform:
+            rec['platform'] = platform
+        rec['fatal'] = fatal or bool(rec.get('fatal'))
+        _keep_backup(CRASHES)
+        with open(CRASHES, 'w', encoding='utf-8') as f:
+            json.dump(items, f, ensure_ascii=False)
+    return 201, {'ok': True}
+
+
 def _report_comment(data):
     """Жалоба ученика на сообщение в чате эфира (Guideline 1.2).
 
@@ -1879,7 +1933,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
                   '/redeem', '/auth/token', '/account/delete',
-                  '/comments/report', '/media/link')
+                  '/comments/report', '/media/link', '/crash')
 
     def do_POST(self):
         p = self.path.rstrip('/')
@@ -1970,6 +2024,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._too_many()
                 return
             code, body = _media_link(data, staff=role in ('admin', 'ustaz'))
+            self._send_json(code, body)
+            return
+        if p == '/crash':
+            code, body = _crash_report(data)
             self._send_json(code, body)
             return
         if p == '/comments/report':
