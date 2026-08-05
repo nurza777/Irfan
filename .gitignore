@@ -48,3 +48,6 @@ app.*.map.json
 android/key.properties
 *.jks
 *.keystore
+
+# Резервные копии, вытянутые с сервера (в них секреты).
+irfan-backups/
