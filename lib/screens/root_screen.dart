@@ -27,6 +27,7 @@ import 'settings_screen.dart';
 import 'surah_screen.dart';
 import 'tracker_page.dart';
 import 'zikr_page.dart';
+import 'zikr_settings_sheet.dart';
 
 /// Корневой экран: свайпы листают Кибла ← Трекер ← Главная → Зикры → Новости
 /// с эффектом перелистывания страницы книги. Коран — по кнопке.
@@ -84,6 +85,11 @@ class _RootScreenState extends State<RootScreen> {
         } else if (screen == 'azkar') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const AzkarScreen()));
+        } else if (screen == 'zikr_settings') {
+          _controller.jumpToPage(3);
+          Future.delayed(const Duration(milliseconds: 400), () {
+            if (mounted) showZikrSettings(context);
+          });
         } else if (screen.startsWith('zikr')) {
           _controller.jumpToPage(3);
           if (screen == 'zikr_speak') {
