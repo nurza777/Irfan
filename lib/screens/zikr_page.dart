@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
+import '../services/private_zikr_service.dart';
 import '../services/voice_service.dart';
+import 'private_zikr_section.dart';
 import '../services/lang.dart';
 import '../services/zikr_service.dart';
 import '../theme.dart';
@@ -121,6 +123,12 @@ class _ZikrPageState extends State<ZikrPage> {
       );
     }
 
+    // Закрытые зикры показываем в том же ряду названий: раньше о них
+    // напоминал только раздел в настройках, и про добавленный обет легко
+    // было забыть. Считаются они по-прежнему вводом числа — круг с
+    // нажатиями для обета не подходит.
+    final private = state.privateZikrs?.all ?? const <PrivateZikr>[];
+
     final selected = goals
             .where((g) => g.id == _selectedId)
             .firstOrNull ??
@@ -187,10 +195,16 @@ class _ZikrPageState extends State<ZikrPage> {
                 height: 46,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  itemCount: goals.length,
+                  itemCount: goals.length + private.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 8),
                   itemBuilder: (context, i) {
-                    final g = goals[i];
+                    // Обеты идут ПЕРВЫМИ: постоянных зикров семь, ряд
+                    // прокручивается, и в хвосте свой обет не виден — а он
+                    // как раз тот, о котором забываешь.
+                    if (i < private.length) {
+                      return _PrivateChip(zikr: private[i]);
+                    }
+                    final g = goals[i - private.length];
                     final c = zikrs.countOf(state.todayDate, g.id);
                     final isSel = g.id == selected.id;
                     final gDone = c >= g.target;
@@ -399,6 +413,51 @@ class _ZikrPageState extends State<ZikrPage> {
 }
 
 /// Круглая стрелка переключения зикра.
+/// Закрытый зикр в ряду названий. Отличается замком и тем, что по нажатию
+/// открывает ввод числа, а не встаёт в круг: обет заполняют «сколько
+/// сделал», и менять это ради единообразия было бы хуже для человека.
+class _PrivateChip extends StatelessWidget {
+  final PrivateZikr zikr;
+  const _PrivateChip({required this.zikr});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = AppScope.of(context);
+    final svc = state.privateZikrs;
+    if (svc == null) return const SizedBox.shrink();
+    final day = state.todayDate;
+    final done = svc.doneToday(day, zikr.id);
+    final closed = done >= zikr.target;
+    return PressableScale(
+      onTap: () {
+        VoiceService.instance.stop();
+        showPrivateZikrProgress(context, svc, day, zikr);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.28),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+        ),
+        child: Row(
+          children: [
+            Icon(closed ? Icons.check_circle : Icons.lock_outline,
+                size: 16,
+                color: closed ? AppColors.accentGreen : AppColors.goldLight),
+            const SizedBox(width: 5),
+            Text('${zikr.title} · $done/${zikr.target}',
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white.withValues(alpha: 0.85))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ArrowButton extends StatelessWidget {
   final IconData icon;
   final bool enabled;
@@ -436,14 +495,18 @@ class _ZikrVoiceButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Записи есть не у всех зикров. Мёртвая кнопка хуже её отсутствия.
+    if (!VoiceService.instance.hasRecording('audio/zikr/${goal.id}.mp3')) {
+      return const SizedBox.shrink();
+    }
     return ValueListenableBuilder<String?>(
       valueListenable: VoiceService.instance.speakingId,
       builder: (context, speaking, _) {
         final id = 'zikr_${goal.id}';
         final active = speaking == id;
         return PressableScale(
-          onTap: () => VoiceService.instance.speak(id, goal.arabic,
-              asset: 'audio/zikr/${goal.id}.mp3', fallback: goal.title),
+          onTap: () =>
+              VoiceService.instance.speak(id, 'audio/zikr/${goal.id}.mp3'),
           child: GlassCard(
             radius: 22,
             blur: 10,

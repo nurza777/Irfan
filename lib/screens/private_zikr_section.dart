@@ -72,9 +72,17 @@ class PrivateZikrSection extends StatelessWidget {
     );
   }
 
-  /// Диалог «сколько сделал»: вписанное вычитается из остатка.
   Future<void> _addProgress(BuildContext context, PrivateZikrService svc,
-      DateTime day, PrivateZikr z) async {
+          DateTime day, PrivateZikr z) =>
+      showPrivateZikrProgress(context, svc, day, z);
+}
+
+/// Диалог «сколько сделал»: вписанное вычитается из остатка.
+///
+/// Общий и для раздела закрытых зикров, и для ряда названий вверху экрана
+/// зикров: способ заполнения у обета один и тот же, где бы его ни открыли.
+Future<void> showPrivateZikrProgress(BuildContext context,
+    PrivateZikrService svc, DateTime day, PrivateZikr z) async {
     final left = svc.leftToday(day, z);
     if (left == 0) {
       final again = await showDialog<bool>(
@@ -269,7 +277,6 @@ class PrivateZikrSection extends StatelessWidget {
       await AppScope.of(context).rescheduleNotifications();
     }
   }
-}
 
 class _PrivateZikrTile extends StatelessWidget {
   final PrivateZikr zikr;

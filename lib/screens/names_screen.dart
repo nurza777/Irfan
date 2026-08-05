@@ -143,12 +143,8 @@ class _ListenButton extends StatelessWidget {
         final id = 'name_$index';
         final active = speaking == id;
         return PressableScale(
-          onTap: () {
-            final name = asmaulHusna[index];
-            VoiceService.instance.speak(id, name.arabic,
-                asset: 'audio/names/${name.number}.mp3',
-                fallback: '${name.translit}. ${name.meaning}');
-          },
+          onTap: () => VoiceService.instance
+              .speak(id, 'audio/names/${asmaulHusna[index].number}.mp3'),
           child: GlassCard(
             radius: 24,
             blur: 10,

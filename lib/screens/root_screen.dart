@@ -89,8 +89,8 @@ class _RootScreenState extends State<RootScreen> {
           if (screen == 'zikr_speak') {
             final goal = AppScope.of(context).zikrs!.goals.first;
             Future.delayed(const Duration(milliseconds: 600), () {
-              VoiceService.instance.speak('zikr_${goal.id}', goal.arabic,
-                  asset: 'audio/zikr/${goal.id}.mp3', fallback: goal.title);
+              VoiceService.instance
+                  .speak('zikr_${goal.id}', 'audio/zikr/${goal.id}.mp3');
             });
           }
         } else if (screen == 'quran_reset') {
@@ -151,9 +151,8 @@ class _RootScreenState extends State<RootScreen> {
           if (screen == 'names_speak') {
             Future.delayed(const Duration(milliseconds: 600), () {
               final name = asmaulHusna.first;
-              VoiceService.instance.speak('name_0', name.arabic,
-                  asset: 'audio/names/${name.number}.mp3',
-                  fallback: '${name.translit}. ${name.meaning}');
+              VoiceService.instance
+                  .speak('name_0', 'audio/names/${name.number}.mp3');
             });
           }
         }

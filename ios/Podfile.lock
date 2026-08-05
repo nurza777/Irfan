@@ -13,8 +13,6 @@ PODS:
     - Flutter
   - flutter_timezone (0.0.1):
     - Flutter
-  - flutter_tts (0.0.1):
-    - Flutter
   - HaishinKit (1.7.3):
     - Logboard (~> 2.4.1)
   - home_widget (0.0.1):
@@ -30,7 +28,6 @@ DEPENDENCIES:
   - flutter_local_notifications (from `.symlinks/plugins/flutter_local_notifications/ios`)
   - flutter_secure_storage (from `.symlinks/plugins/flutter_secure_storage/ios`)
   - flutter_timezone (from `.symlinks/plugins/flutter_timezone/ios`)
-  - flutter_tts (from `.symlinks/plugins/flutter_tts/ios`)
   - home_widget (from `.symlinks/plugins/home_widget/ios`)
   - native_device_orientation (from `.symlinks/plugins/native_device_orientation/ios`)
 
@@ -53,8 +50,6 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/flutter_secure_storage/ios"
   flutter_timezone:
     :path: ".symlinks/plugins/flutter_timezone/ios"
-  flutter_tts:
-    :path: ".symlinks/plugins/flutter_tts/ios"
   home_widget:
     :path: ".symlinks/plugins/home_widget/ios"
   native_device_orientation:
@@ -68,7 +63,6 @@ SPEC CHECKSUMS:
   flutter_local_notifications: 395056b3175ba4f08480a7c5de30cd36d69827e4
   flutter_secure_storage: 1ed9476fba7e7a782b22888f956cce43e2c62f13
   flutter_timezone: ee50ce7786b5fde27e2fe5375bbc8c9661ffc13f
-  flutter_tts: 35ac3c7d42412733e795ea96ad2d7e05d0a75113
   HaishinKit: 326e27c4d06427ba53bffc68e516a92033293051
   home_widget: f169fc41fd807b4d46ab6615dc44d62adbf9f64f
   Logboard: 759d82599c439945d430d5a0958455b5a1974a0c

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_state.dart';
 import 'services/crash_reporter.dart';
+import 'services/voice_service.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/root_screen.dart';
 import 'theme.dart';
@@ -18,6 +19,9 @@ Future<void> main() async {
   // одном месте — в полноэкранном плеере урока, и он включает её сам.
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   await initializeDateFormatting('ru');
+  // Опись записей — до первого кадра: экраны по ней решают,
+  // показывать ли кнопку озвучки, и решают синхронно.
+  await VoiceService.instance.loadCatalog();
   final prefs = await SharedPreferences.getInstance();
   final onboardingDone = prefs.getBool('onboarding_done') ?? false;
 

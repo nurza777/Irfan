@@ -203,22 +203,8 @@ class _AzkarCard extends StatelessWidget {
                               color: AppColors.goldLight)),
                     ),
                   const Spacer(),
-                  ValueListenableBuilder<String?>(
-                    valueListenable: VoiceService.instance.speakingId,
-                    builder: (context, speaking, _) {
-                      final active = speaking == id;
-                      return IconButton(
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () => VoiceService.instance
-                            .speak(id, azkar.arabic, fallback: azkar.translit),
-                        icon: Icon(
-                            active
-                                ? Icons.stop_circle
-                                : Icons.volume_up_rounded,
-                            color: AppColors.goldLight),
-                      );
-                    },
-                  ),
+                  // Кнопки озвучки здесь больше нет: записей для азкаров не
+                  // существует, а машинный голос читал арабский плохо.
                 ],
               ),
               const SizedBox(height: 8),

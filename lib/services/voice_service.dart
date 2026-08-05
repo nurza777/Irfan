@@ -1,88 +1,89 @@
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter_tts/flutter_tts.dart';
+import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 
-/// Озвучка имён Аллаха и зикров. Сначала пробует настоящую запись чтеца из
-/// ассетов (assets/audio/…); если файла нет — системный синтез речи
-/// (арабский голос, а без него — русский текст-фолбэк). Всё офлайн.
+/// Озвучка настоящими записями — и только ими.
+///
+/// Раньше при отсутствии записи включался системный синтез речи. Звучал он
+/// механически и на арабском читал плохо, а в приложении о поклонении это
+/// хуже, чем тишина. Теперь: есть запись — звучит, нет записи — кнопки
+/// озвучки просто нет.
+///
+/// Всё офлайн, из ассетов. Аудио Корана живёт отдельно (свои чтецы и
+/// загрузка, см. QuranAudioCache) и сюда не относится.
 class VoiceService {
   VoiceService._();
   static final VoiceService instance = VoiceService._();
 
   final _player = AudioPlayer();
-  final _tts = FlutterTts();
   bool _ready = false;
-  String? _arLocale; // выбранный арабский локаль или null, если голоса нет
+
+  /// Какие записи вообще есть в сборке. Заполняется один раз из описи
+  /// ассетов, чтобы экраны могли СИНХРОННО решить, показывать ли кнопку:
+  /// проверять наличие файла в момент отрисовки нельзя — это асинхронно.
+  Set<String> _available = const {};
+  bool _catalogLoaded = false;
 
   /// id текущего озвучиваемого элемента (null — тишина). Кнопки подписываются,
   /// чтобы показывать «стоп» только у своего элемента.
   final ValueNotifier<String?> speakingId = ValueNotifier(null);
 
+  /// Читает опись ассетов. Вызывать один раз при запуске, до первого экрана.
+  Future<void> loadCatalog() async {
+    if (_catalogLoaded) return;
+    _catalogLoaded = true;
+    try {
+      // Именно AssetManifest, а не чтение AssetManifest.json: файла с таким
+      // именем в сборке уже нет, опись давно бинарная, и попытка прочитать
+      // её как текст тихо давала пустой список — кнопки озвучки пропадали
+      // даже там, где запись есть.
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      _available = manifest
+          .listAssets()
+          .where((k) => k.startsWith('assets/audio/'))
+          .map((k) => k.substring('assets/'.length))
+          .toSet();
+    } catch (e) {
+      debugPrint('voice catalog error: $e');
+      _available = const {};
+    }
+  }
+
+  /// Есть ли запись для этого пути (внутри assets/, например
+  /// `audio/zikr/subhanallah.mp3`).
+  bool hasRecording(String asset) => _available.contains(asset);
+
   Future<void> _init() async {
     if (_ready) return;
     _player.onPlayerComplete.listen((_) => speakingId.value = null);
-    try {
-      await _tts.setSharedInstance(true);
-      // Категория playback — чтобы озвучка звучала и при выключенном
-      // переключателе звонка на iPhone.
-      await _tts.setIosAudioCategory(
-        IosTextToSpeechAudioCategory.playback,
-        [IosTextToSpeechAudioCategoryOptions.duckOthers],
-        IosTextToSpeechAudioMode.spokenAudio,
-      );
-    } catch (_) {
-      // Не iOS — настройки категории недоступны, это нормально.
-    }
-    for (final locale in const ['ar-SA', 'ar-001', 'ar-AE', 'ar-EG', 'ar']) {
-      if (await _tts.isLanguageAvailable(locale) == true) {
-        _arLocale = locale;
-        break;
-      }
-    }
-    await _tts.setSpeechRate(0.42);
-    await _tts.awaitSpeakCompletion(true);
-    _tts.setCompletionHandler(() => speakingId.value = null);
-    _tts.setCancelHandler(() => speakingId.value = null);
+    // Категория playback — чтобы озвучка звучала и при выключенном
+    // переключателе звонка на iPhone.
+    await _player.setAudioContext(AudioContext(
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playback,
+        options: const {AVAudioSessionOptions.duckOthers},
+      ),
+    ));
     _ready = true;
   }
 
-  /// Озвучить элемент [id]. Порядок: запись [asset] (путь внутри assets/,
-  /// например `audio/names/1.mp3`) → арабский TTS [arabic] → русский TTS
-  /// [fallback]. Повторный вызов с тем же [id] во время звучания — стоп.
-  Future<void> speak(String id, String arabic,
-      {String? asset, String? fallback}) async {
+  /// Проигрывает запись [asset]. Повторный вызов с тем же [id] во время
+  /// звучания — стоп. Если записи нет, ничего не происходит: кнопку в таком
+  /// случае и не показывают.
+  Future<void> speak(String id, String asset) async {
     await _init();
     if (speakingId.value == id) {
       await stop();
       return;
     }
     await stop();
-    if (asset != null && await _assetExists('assets/$asset')) {
-      speakingId.value = id;
-      await _player.play(AssetSource(asset));
-      return;
-    }
-    final useArabic = _arLocale != null && arabic.trim().isNotEmpty;
-    final text = useArabic ? arabic : (fallback ?? arabic);
-    if (text.trim().isEmpty) return;
-    await _tts.setLanguage(useArabic ? _arLocale! : 'ru-RU');
+    if (!hasRecording(asset)) return;
     speakingId.value = id;
-    await _tts.speak(text);
-  }
-
-  Future<bool> _assetExists(String key) async {
-    try {
-      await rootBundle.load(key);
-      return true;
-    } catch (_) {
-      return false;
-    }
+    await _player.play(AssetSource(asset));
   }
 
   Future<void> stop() async {
-    speakingId.value = null;
     await _player.stop();
-    await _tts.stop();
+    speakingId.value = null;
   }
 }
