@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../app_state.dart';
 import '../services/courses_service.dart';
+import '../services/media_link.dart';
 import '../services/lang.dart';
 import '../services/watch_progress.dart';
 import '../theme.dart';
@@ -78,8 +80,16 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
     });
     await old?.dispose();
 
+    // Адрес урока подписывается на время просмотра: файлы в uploads/ больше
+    // не отдаются всем подряд. Сам _lesson.url не меняем — по нему
+    // запоминается место остановки, и подпись сбрасывала бы его при каждом
+    // открытии.
+    final src = await MediaLink.playable(
+        _lesson.url, mounted ? AppScope.of(context).auth : null);
+    if (!mounted) return;
+
     final c = VideoPlayerController.networkUrl(
-      Uri.parse(_lesson.url),
+      Uri.parse(src),
       videoPlayerOptions: VideoPlayerOptions(allowBackgroundPlayback: false),
     );
     try {

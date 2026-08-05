@@ -25,6 +25,7 @@ POST /access/grant, /access/revoke (admin) — доступ к направле�
 """
 import base64
 import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -43,6 +44,8 @@ AUTH_FILE = os.environ.get('IRFAN_AUTH_FILE', '/etc/irfan/auth.json')
 # окружение, чтобы прогонять сервер локально, не трогая боевые файлы.
 STAFF_FILE = os.environ.get('IRFAN_STAFF_FILE', '/etc/irfan/staff.json')
 STREAM_FILE = os.environ.get('IRFAN_STREAM_FILE', '/etc/irfan/stream.json')
+# Секрет подписи ссылок на уроки и выключатель проверки.
+MEDIA_CFG = os.environ.get('IRFAN_MEDIA_CFG', '/etc/irfan/media.json')
 COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
@@ -63,6 +66,10 @@ _MAX_POST_BYTES = 256 * 1024
 # Потолки для PUT: урок — большой файл (самый тяжёлый из залитых 787 МБ),
 # JSON-документы каталога и новостей — заведомо мелкие.
 _MAX_UPLOAD_BYTES = 4 * 1024 ** 3
+# Сколько живёт подписанная ссылка на урок. Урок длинный, а
+# перемотка открывает соединение заново — с коротким сроком
+# видео обрывалось бы на середине.
+MEDIA_LINK_TTL_S = 6 * 3600
 _MAX_JSON_PUT_BYTES = 8 * 1024 * 1024
 
 # Корни грубой брани. Первая группа ловится с приставками («нахуй»,
@@ -1430,6 +1437,78 @@ def _delete_user(data):
         return 200, {'student': ident, 'deleted': True}
 
 
+def _media_cfg():
+    """Настройки раздачи уроков. Секрет подписи заводится при первом обращении.
+
+    `require_signed` намеренно выключен по умолчанию: на телефонах учеников
+    ещё стоят прежние сборки, которые ходят за уроком по голой ссылке, и
+    включение вслепую оборвало бы им занятия. Включать, когда новая сборка
+    разъедется по устройствам.
+    """
+    cfg = _read_json(MEDIA_CFG, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if not cfg.get('secret'):
+        cfg['secret'] = secrets.token_urlsafe(32)
+        cfg.setdefault('require_signed', False)
+        try:
+            _write_private(MEDIA_CFG, cfg)
+        except OSError as e:
+            print(f'[media] не удалось записать {MEDIA_CFG}: {e}', flush=True)
+    return cfg
+
+
+def _media_sign(name, exp):
+    key = _media_cfg().get('secret', '')
+    msg = f'{name}|{exp}'.encode()
+    return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def _media_sig_ok(name, exp_raw, sig):
+    """Верна ли подпись ссылки на урок и не истекла ли она."""
+    if not sig or not exp_raw:
+        return False
+    try:
+        exp = int(exp_raw)
+    except (TypeError, ValueError):
+        return False
+    if exp < time.time():
+        return False
+    return secrets.compare_digest(sig, _media_sign(name, exp))
+
+
+def _media_link(data, staff):
+    """Выдаёт временную ссылку на урок.
+
+    Файлы в uploads/ раздавались всем, кто знает имя: ссылку достаточно было
+    один раз переслать, и урок смотрел кто угодно. Теперь приложение просит
+    ссылку, а сервер подписывает её на несколько часов.
+
+    Сам файл на диске не трогается и не переименовывается — иначе поехали бы
+    и опубликованные уроки, и раскладка по папкам.
+    """
+    name = safe_upload_name(
+        (data.get('name') or '').strip() or
+        (data.get('url') or '').strip().rsplit('/', 1)[-1].split('?')[0])
+    if not name:
+        return 400, {'error': 'bad name'}
+    if not os.path.isfile(os.path.join(UPLOADS, name)):
+        return 404, {'error': 'no file'}
+    # Персонал получает ссылку по своей авторизации, ученик — по ключу
+    # устройства (тому же, которым подписывает анкету).
+    if not staff:
+        users = _load_users()
+        ident = _identity(data)
+        rec = _find_user(users, ident) if ident else None
+        if rec is None or rec.get('blocked') or not _student_ok(rec, data):
+            return 403, {'error': 'forbidden'}
+    exp = int(time.time()) + MEDIA_LINK_TTL_S
+    return 200, {
+        'url': f'{MEDIA_BASE}/uploads/{name}?exp={exp}&sig={_media_sign(name, exp)}',
+        'expiresIn': MEDIA_LINK_TTL_S,
+    }
+
+
 def _report_comment(data):
     """Жалоба ученика на сообщение в чате эфира (Guideline 1.2).
 
@@ -1781,6 +1860,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == '/pending.json':
             self._send_json(200, _pending_list())
             return
+        # Уроки: пускаем по подписанной ссылке (её выдаёт POST /media/link)
+        # либо по авторизации персонала — панель и кабинет устаза смотрят
+        # ролики напрямую. Пока require_signed выключен, прежние сборки на
+        # телефонах работают как раньше.
+        if p.startswith('/uploads/') and _media_cfg().get('require_signed'):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            name = p[len('/uploads/'):]
+            if not _media_sig_ok(name, (q.get('exp') or [''])[0],
+                                 (q.get('sig') or [''])[0]) \
+                    and self._role_checked() not in ('admin', 'ustaz'):
+                self._deny(403)
+                return
         if self._serve_range():
             return
         return super().do_GET()
@@ -1788,7 +1879,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
                   '/redeem', '/auth/token', '/account/delete',
-                  '/comments/report')
+                  '/comments/report', '/media/link')
 
     def do_POST(self):
         p = self.path.rstrip('/')
@@ -1871,6 +1962,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if p == '/redeem':
             code, body = _redeem(data)
+            self._send_json(code, body)
+            return
+        if p == '/media/link':
+            role = self._role_checked()
+            if role == 'ratelimited':
+                self._too_many()
+                return
+            code, body = _media_link(data, staff=role in ('admin', 'ustaz'))
             self._send_json(code, body)
             return
         if p == '/comments/report':
