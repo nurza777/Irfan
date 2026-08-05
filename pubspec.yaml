@@ -88,8 +88,10 @@ flutter:
     # Озвучка 99 имён Аллаха: <номер>.mp3, чтение из открытого набора
     # (github.com/MohammedAbidNafi/99-Names-of-Allah, MIT). №67 нет — TTS.
     - assets/audio/names/
-    # Озвучка зикров: <id>.mp3 (subhanallah.mp3 …). Пока пусто — работает
-    # TTS; положите записи сюда, и они подхватятся сами.
+    # Озвучка зикров: <id>.mp3. Записи устаза для четырёх основных
+    # (subhanallah, alhamdulillah, allahuakbar, astaghfirullah); для
+    # остальных пока работает синтез речи — положите файл с нужным id,
+    # и он подхватится сам.
     - assets/audio/zikr/
     # Переводы Корана (gzip-JSON {"сура:аят": текст}, alquran.cloud/Tanzil).
     - assets/quran/
