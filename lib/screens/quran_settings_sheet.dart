@@ -153,12 +153,18 @@ class _QuranSettings extends StatelessWidget {
                       const SizedBox(height: 18),
                       _label(t('ПЕРЕВОД')),
                       const SizedBox(height: 8),
-                      for (final t in quranTranslations)
-                        _TranslationTile(
-                          translation: t,
-                          active: qs.translation.id == t.id,
-                          onTap: () => qs.setTranslation(t),
-                        ),
+                      // Когда перевод один, список из одной строки — это
+                      // выбор без выбора. Показываем, чей текст читает
+                      // человек: указание источника всё равно обязательно.
+                      if (quranTranslations.length == 1)
+                        _TranslationSource(quranTranslations.first)
+                      else
+                        for (final t in quranTranslations)
+                          _TranslationTile(
+                            translation: t,
+                            active: qs.translation.id == t.id,
+                            onTap: () => qs.setTranslation(t),
+                          ),
                       const SizedBox(height: 18),
                       _label(t('ОФФЛАЙН-АУДИО')),
                       const SizedBox(height: 8),
@@ -219,6 +225,49 @@ class _QuranSettings extends StatelessWidget {
 }
 
 /// Строка выбора перевода: имя + пояснение (язык/стиль), радио и галочка.
+/// Единственный перевод — не переключатель, а строка «чей текст вы читаете».
+class _TranslationSource extends StatelessWidget {
+  final QuranTranslation translation;
+  const _TranslationSource(this.translation);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.22),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.translate,
+              size: 20, color: AppColors.goldLight),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(translation.name,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(
+                  '${translation.subtitle} · ${t('с разрешения источника')}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withValues(alpha: 0.55)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TranslationTile extends StatelessWidget {
   final QuranTranslation translation;
   final bool active;

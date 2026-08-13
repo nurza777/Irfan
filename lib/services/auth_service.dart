@@ -237,6 +237,42 @@ class AuthService {
     return null;
   }
 
+  /// Заводит локальный аккаунт по анкете, восстановленной с сервера, и сразу
+  /// входит в него. null — успех, иначе текст ошибки.
+  ///
+  /// От [register] отличается двумя вещами. Во-первых, [createdAt] берётся с
+  /// сервера, а не ставится «сейчас»: от даты создания аккаунта считается
+  /// потолок «сколько намазов физически можно было прочитать», и новая дата
+  /// обрезала бы человеку его же историю. Во-вторых, запись с таким номером
+  /// не считается помехой — она перезаписывается: сюда попадают ровно тогда,
+  /// когда аккаунт переносят на это устройство.
+  Future<String?> restore({
+    required String name,
+    required String phone,
+    required String password,
+    required DateTime createdAt,
+    int age = 0,
+    Gender gender = Gender.male,
+    String city = '',
+  }) async {
+    final ph = normalizePhone(phone);
+    if (ph.isEmpty) return t('Некорректный номер телефона');
+    if (password.length < 6) return t('Пароль — минимум 6 символов');
+    final users = _users()..removeWhere((u) => u.phone == ph);
+    users.add(UserAccount(
+      name: name.trim().isEmpty ? ph : name.trim(),
+      phone: ph,
+      passHash: await _newHash(password),
+      createdAt: createdAt,
+      age: age,
+      gender: gender,
+      city: city.trim(),
+    ));
+    await _saveUsers(users);
+    await _prefs.setString(_currentKey, ph);
+    return null;
+  }
+
   /// Обновляет возраст/пол текущего пользователя.
   Future<void> updateCurrentProfile({int? age, Gender? gender}) async {
     final phone = _prefs.getString(_currentKey);

@@ -9,6 +9,7 @@ import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
+import '../widgets/account_gate.dart';
 import '../widgets/glass.dart';
 import '../widgets/prayer_times_card.dart';
 import 'account_screen.dart';
@@ -95,40 +96,44 @@ class HomePage extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  PressableScale(
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const AccountScreen())),
-                    child: GlassCard(
-                      radius: 22,
-                      blur: 10,
-                      darkness: 0.18,
-                      child: SizedBox(
-                        height: 38,
-                        child: Padding(
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 11),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // Не доллар: коины — внутренние баллы, а
-                              // значок валюты сбивал с толку.
-                              const Icon(Icons.toll,
-                                  color: AppColors.goldLight, size: 20),
-                              const SizedBox(width: 6),
-                              Text('${state.coins}',
-                                  style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.cream)),
-                            ],
+                  // Коины считаются по аккаунту: без него это всегда ноль,
+                  // и чип только сбивал бы с толку.
+                  if (user != null) ...[
+                    const SizedBox(width: 10),
+                    PressableScale(
+                      onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const AccountScreen())),
+                      child: GlassCard(
+                        radius: 22,
+                        blur: 10,
+                        darkness: 0.18,
+                        child: SizedBox(
+                          height: 38,
+                          child: Padding(
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 11),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Не доллар: коины — внутренние баллы, а
+                                // значок валюты сбивал с толку.
+                                const Icon(Icons.toll,
+                                    color: AppColors.goldLight, size: 20),
+                                const SizedBox(width: 6),
+                                Text('${state.coins}',
+                                    style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.cream)),
+                              ],
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
+                  ],
                   const Spacer(),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -192,6 +197,59 @@ class HomePage extends StatelessWidget {
   }
 }
 
+/// Пункт меню «···». [free] — открыт и без аккаунта (кибла, настройки);
+/// остальные показываются с замком и ведут на приглашение зарегистрироваться.
+///
+/// [sheet] — контекст самого листа: его надо закрыть до перехода, иначе
+/// новый экран открывается под ним.
+class _MenuTile extends StatelessWidget {
+  final IconData icon;
+  final Color? iconColor;
+  final String title;
+  final String subtitle;
+  final BuildContext sheet;
+  final void Function(BuildContext context) open;
+  final bool free;
+
+  const _MenuTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.sheet,
+    required this.open,
+    this.iconColor,
+    this.free = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final locked = !free && !AccountGate.isOpen(context);
+    final dim = locked ? 0.45 : 1.0;
+    return ListTile(
+      leading: Icon(icon,
+          color: (iconColor ?? AppColors.gold).withValues(alpha: dim)),
+      title: Text(t(title),
+          style: TextStyle(color: Colors.white.withValues(alpha: dim))),
+      subtitle: Text(t(subtitle),
+          style: TextStyle(
+              color: Colors.white.withValues(alpha: dim * 0.7))),
+      trailing: locked
+          ? Icon(Icons.lock_outline,
+              size: 18, color: Colors.white.withValues(alpha: 0.5))
+          : null,
+      onTap: () {
+        final navigatorContext = context;
+        Navigator.pop(sheet);
+        if (locked) {
+          AccountGate.invite(navigatorContext, t(title));
+        } else {
+          open(navigatorContext);
+        }
+      },
+    );
+  }
+}
+
 /// «Прочитали ли вы намаз … ?» — появляется через 10 минут после времени.
 class _TrackerQuestionBanner extends StatelessWidget {
   const _TrackerQuestionBanner();
@@ -199,6 +257,9 @@ class _TrackerQuestionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
+    // Ответ уходит в трекер, а трекер — часть аккаунта. Без него спрашивать
+    // не о чем: отметка всё равно никуда не запишется.
+    if (!AccountGate.isOpen(context)) return const SizedBox.shrink();
     final due = state.tracker!.dueQuestion(state.today!, state.now);
 
     return AnimatedSwitcher(
@@ -338,7 +399,8 @@ class _BottomBar extends StatelessWidget {
         _BarButton(
           icon: Icons.grid_view_rounded,
           label: t('Ещё'),
-          onTap: () => _showMoreSheet(context),
+          onTap: () => showMoreSheet(context,
+              onOpenZikr: onOpenZikr, onOpenQibla: onOpenQibla),
         ),
         _BarButton(
           icon: Icons.menu_book_rounded,
@@ -351,7 +413,16 @@ class _BottomBar extends StatelessWidget {
     );
   }
 
-  void _showMoreSheet(BuildContext context) {
+}
+
+/// Лист «Ещё» — все разделы приложения. Вынесен из нижней панели наружу:
+/// панель — это три кнопки, а список разделов живёт своей жизнью и его надо
+/// уметь открыть со стороны (например, отладочным хуком).
+void showMoreSheet(
+  BuildContext context, {
+  required VoidCallback onOpenZikr,
+  required VoidCallback onOpenQibla,
+}) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -387,116 +458,82 @@ class _BottomBar extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  ListTile(
-                    leading: const Icon(Icons.menu_book_outlined,
-                        color: AppColors.gold),
-                    title: Text(t('Азкары и дуа')),
-                    subtitle: Text(t('Утро/вечер, после намаза, поминания')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const AzkarScreen()));
-                    },
+                  // Замок ставится здесь, а не внутри каждого экрана: так
+                  // видно одним взглядом, что открыто без аккаунта, а что нет.
+                  _MenuTile(
+                    icon: Icons.menu_book_outlined,
+                    title: 'Азкары и дуа',
+                    subtitle: 'Утро/вечер, после намаза, поминания',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const AzkarScreen())),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.nightlight_round,
-                        color: AppColors.gold),
-                    title: Text(t('Рамадан')),
-                    subtitle: Text(t('Сухур, ифтар и дни поста')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const RamadanScreen()));
-                    },
+                  _MenuTile(
+                    icon: Icons.nightlight_round,
+                    title: 'Рамадан',
+                    subtitle: 'Сухур, ифтар и дни поста',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(
+                            builder: (_) => const RamadanScreen())),
                   ),
-                  ListTile(
-                    leading: Icon(Icons.sensors,
-                        color: Colors.red.shade400),
-                    title: Text(t('Прямой эфир')),
-                    subtitle: Text(t('Трансляции устаза')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const LiveScreen()));
-                    },
+                  _MenuTile(
+                    icon: Icons.sensors,
+                    iconColor: Colors.red.shade400,
+                    title: 'Прямой эфир',
+                    subtitle: 'Трансляции устаза',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const LiveScreen())),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.campaign_outlined,
-                        color: AppColors.gold),
-                    title: Text(t('Новости')),
-                    subtitle: Text(t('Объявления от устаза')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const NewsScreen()));
-                    },
+                  _MenuTile(
+                    icon: Icons.campaign_outlined,
+                    title: 'Новости',
+                    subtitle: 'Объявления от устаза',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const NewsScreen())),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.explore_outlined,
-                        color: AppColors.gold),
-                    title: Text(t('Кибла')),
-                    subtitle: Text(t('Компас направления на Мекку')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      onOpenQibla();
-                    },
+                  _MenuTile(
+                    icon: Icons.explore_outlined,
+                    title: 'Кибла',
+                    subtitle: 'Компас направления на Мекку',
+                    sheet: ctx,
+                    free: true,
+                    open: (_) => onOpenQibla(),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.track_changes,
-                        color: AppColors.gold),
-                    title: Text(t('Счётчик зикров')),
-                    subtitle: Text(t('Тасбих и дневные цели')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      onOpenZikr();
-                    },
+                  _MenuTile(
+                    icon: Icons.track_changes,
+                    title: 'Счётчик зикров',
+                    subtitle: 'Тасбих и дневные цели',
+                    sheet: ctx,
+                    open: (_) => onOpenZikr(),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.school_outlined,
-                        color: AppColors.gold),
-                    title: Text(t('Курсы')),
-                    subtitle: Text(t('Обучение основам религии')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const CoursesPage()));
-                    },
+                  _MenuTile(
+                    icon: Icons.school_outlined,
+                    title: 'Курсы',
+                    subtitle: 'Обучение основам религии',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const CoursesPage())),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.auto_awesome,
-                        color: AppColors.gold),
-                    title: Text(t('99 имён Аллаха')),
-                    subtitle: Text(t('аль-Асма аль-Хусна')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const NamesScreen()));
-                    },
+                  _MenuTile(
+                    icon: Icons.auto_awesome,
+                    title: '99 имён Аллаха',
+                    subtitle: 'аль-Асма аль-Хусна',
+                    sheet: ctx,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const NamesScreen())),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.settings_outlined,
-                        color: AppColors.gold),
-                    title: Text(t('Настройки')),
-                    subtitle: Text(t('Локация, мазхаб, зикры')),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const SettingsScreen()));
-                    },
+                  _MenuTile(
+                    icon: Icons.settings_outlined,
+                    title: 'Настройки',
+                    subtitle: 'Локация, мазхаб, зикры',
+                    sheet: ctx,
+                    free: true,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsScreen())),
                   ),
                   const SizedBox(height: 12),
                 ],
@@ -507,6 +544,5 @@ class _BottomBar extends StatelessWidget {
         ),
       ),
     );
-  }
 }
 

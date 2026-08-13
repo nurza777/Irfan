@@ -1,64 +1,44 @@
-/// Перевод/транслитерация Корана. [asset] == null — берётся из пакета `quran`
-/// (Кулиев, офлайн по умолчанию); иначе это gzip-JSON `{"сура:аят": текст}`
-/// в ассетах (скачаны с alquran.cloud, проект Tanzil — открытые тексты).
+/// Перевод/транслитерация Корана: gzip-JSON `{"сура:аят": текст}` в ассетах.
+///
+/// **Почему список такой короткий.** Раньше здесь лежали девять переводов
+/// (Кулиев, Абу Адель, Османов, Порохова, Крачковский, Саблуков,
+/// Аль-Мунтахаб, казахский Халифы Алтая), скачанных из открытых сборников.
+/// Открыто лежащий текст — не то же самое, что текст, который разрешено
+/// распространять: почти все эти переводчики живы или умерли недавно, то есть
+/// их переводы под охраной, а подтверждения прав у проекта не было ни на
+/// один. Приложение при этом раздавало их полными текстами в каждой сборке —
+/// то есть ровно то, что Apple разбирает по пункту 5.2.
+///
+/// Теперь перевод один и с разрешения правообладателя — исламского
+/// информационно-образовательного портала Azan.ru. Указание источника
+/// обязательно (см. `TafsirService.sourceUrl` и подпись в листе тафсира).
+///
+/// Транслитерация (запись арабского звучания кириллицей) тоже убрана — по
+/// решению владельца проекта список сведён к одному источнику. Если она
+/// понадобится, ассет `tr_ru_transliteration.json.gz` есть в истории git.
 class QuranTranslation {
   final String id;
   final String name;
   final String subtitle;
-  final String? asset;
+  final String asset;
   const QuranTranslation({
     required this.id,
     required this.name,
     required this.subtitle,
-    this.asset,
+    required this.asset,
   });
 }
 
 const quranTranslations = <QuranTranslation>[
   QuranTranslation(
-      id: 'kuliev', name: 'Эльмир Кулиев', subtitle: 'Русский · смысловой'),
-  QuranTranslation(
-      id: 'abuadel',
-      name: 'Абу Адель',
+      id: 'azan',
+      name: 'Azan.ru',
       subtitle: 'Русский · смысловой',
-      asset: 'assets/quran/tr_ru_abuadel.json.gz'),
-  QuranTranslation(
-      id: 'osmanov',
-      name: 'Магомед-Нури Османов',
-      subtitle: 'Русский',
-      asset: 'assets/quran/tr_ru_osmanov.json.gz'),
-  QuranTranslation(
-      id: 'porokhova',
-      name: 'Валерия Порохова',
-      subtitle: 'Русский · поэтический',
-      asset: 'assets/quran/tr_ru_porokhova.json.gz'),
-  QuranTranslation(
-      id: 'krachkovsky',
-      name: 'Игнатий Крачковский',
-      subtitle: 'Русский · академический',
-      asset: 'assets/quran/tr_ru_krachkovsky.json.gz'),
-  QuranTranslation(
-      id: 'sablukov',
-      name: 'Гордий Саблуков',
-      subtitle: 'Русский · классический',
-      asset: 'assets/quran/tr_ru_sablukov.json.gz'),
-  QuranTranslation(
-      id: 'muntahab',
-      name: 'Аль-Мунтахаб',
-      subtitle: 'Русский · с толкованием',
-      asset: 'assets/quran/tr_ru_muntahab.json.gz'),
-  QuranTranslation(
-      id: 'translit',
-      name: 'Транслитерация',
-      subtitle: 'Кириллица · чтение',
-      asset: 'assets/quran/tr_ru_transliteration.json.gz'),
-  QuranTranslation(
-      id: 'kazakh',
-      name: 'Халифа Алтай',
-      subtitle: 'Қазақша',
-      asset: 'assets/quran/tr_kk_khalifahaltai.json.gz'),
+      asset: 'assets/quran/tr_ru_azan.json.gz'),
 ];
 
+/// Перевод по id. Неизвестный id — это записанный в настройках выбор из
+/// прежних сборок (например `kuliev`); отдаём первый, а не падаем.
 QuranTranslation translationById(String? id) => quranTranslations.firstWhere(
       (t) => t.id == id,
       orElse: () => quranTranslations.first,

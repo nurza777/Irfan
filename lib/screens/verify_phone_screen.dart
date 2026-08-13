@@ -7,13 +7,17 @@ import '../services/lang.dart';
 import '../services/verify_service.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
-import '../widgets/glass.dart';
+import '../widgets/support_card.dart';
 
 /// Подтверждение телефона после регистрации.
 ///
 /// Код генерирует сервер; он же следит за сроком и числом попыток. Пока
-/// автоотправка в WhatsApp не подключена, код выдаёт устаз — об этом прямо
-/// написано на экране, чтобы человек не ждал сообщения впустую.
+/// автоотправка не подключена, код выдаёт устаз — об этом прямо написано на
+/// экране вместе с кнопками связи, чтобы человек не ждал сообщения впустую.
+///
+/// Экран возвращает разрешение на перенос аккаунта (см. [VerifyResult.ticket])
+/// или null, если человек ушёл, не подтвердив. Разрешением пользуется экран
+/// восстановления; при обычной регистрации оно просто не нужно.
 class VerifyPhoneScreen extends StatefulWidget {
   final String phone;
   const VerifyPhoneScreen({super.key, required this.phone});
@@ -91,7 +95,7 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
     setState(() => _busy = false);
     if (r.isOk) {
       HapticFeedback.mediumImpact();
-      if (mounted) Navigator.pop(context, true);
+      if (mounted) Navigator.pop(context, r.ticket);
       return;
     }
     setState(() {
@@ -137,27 +141,7 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
                 style: const TextStyle(fontSize: 16, height: 1.5),
               ),
               const SizedBox(height: 20),
-              GlassCard(
-                radius: 16,
-                padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: [
-                    const Icon(Icons.info_outline,
-                        color: AppColors.gold, size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        t('Автоотправка в WhatsApp пока не подключена — '
-                            'код можно получить у устаза.'),
-                        style: TextStyle(
-                            fontSize: 12,
-                            height: 1.35,
-                            color: Colors.white.withValues(alpha: 0.75)),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              SupportCard(text: supportVerifyText()),
               const SizedBox(height: 20),
               TextField(
                 controller: _code,
@@ -212,7 +196,7 @@ class _VerifyPhoneScreenState extends State<VerifyPhoneScreen> {
                     : t('Запросить код снова')),
               ),
               TextButton(
-                onPressed: () => Navigator.pop(context, false),
+                onPressed: () => Navigator.pop(context, null),
                 child: Text(t('Подтвердить позже'),
                     style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.6))),

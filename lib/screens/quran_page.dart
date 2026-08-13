@@ -9,7 +9,7 @@ import 'bookmarks_screen.dart';
 import 'surah_screen.dart';
 
 /// Список 114 сур — отдельный экран (открывается кнопкой «КОРАН»).
-/// Тап по суре — чтение (арабский + перевод Кулиева).
+/// Тап по суре — чтение (арабский + перевод Azan.ru).
 class QuranPage extends StatelessWidget {
   const QuranPage({super.key});
 

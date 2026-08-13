@@ -6,6 +6,7 @@ import '../services/lang.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
+import 'restore_account_screen.dart';
 import 'settings_screen.dart';
 import 'shop_screen.dart';
 import 'verify_phone_screen.dart';
@@ -97,7 +98,7 @@ class _AuthFormState extends State<_AuthForm> {
     if (err == null && !_isLogin) {
       final u = state.auth?.current;
       if (u != null && u.phone.isNotEmpty) {
-        await Navigator.push<bool>(
+        await Navigator.push<String>(
           context,
           MaterialPageRoute(
             builder: (_) => VerifyPhoneScreen(phone: u.phone),
@@ -105,6 +106,14 @@ class _AuthFormState extends State<_AuthForm> {
         );
       }
     }
+  }
+
+  Future<void> _restore() async {
+    final ok = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const RestoreAccountScreen()),
+    );
+    if (ok == true && mounted) setState(() {});
   }
 
   @override
@@ -255,6 +264,17 @@ class _AuthFormState extends State<_AuthForm> {
                                 fontWeight: FontWeight.w600)),
                   ),
                 ),
+                // Смена телефона — самая частая настоящая потеря: аккаунт
+                // живёт на устройстве, и без этой кнопки серия, коины и вся
+                // история намазов оставались на прежнем аппарате навсегда.
+                if (_isLogin)
+                  TextButton(
+                    onPressed: _busy ? null : _restore,
+                    child: Text(t('Новый телефон? Восстановить аккаунт'),
+                        style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.75),
+                            fontSize: 13)),
+                  ),
               ],
             ),
           ),

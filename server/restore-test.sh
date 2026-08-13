@@ -25,6 +25,8 @@ echo "==> Собираю из копии рабочий каталог"
 cp /opt/irfan-server/apiserver.py "$WORK/srv/"
 cp "$WORK/unpacked/api/"*.json "$WORK/srv/api/" 2>/dev/null
 cp "$WORK/unpacked/media-folders.json" "$WORK/srv/" 2>/dev/null
+mkdir -p "$WORK/srv/snapshots"
+cp "$WORK/unpacked/snapshots/"*.json "$WORK/srv/snapshots/" 2>/dev/null
 
 PORT=8199
 (
@@ -68,6 +70,11 @@ curl -s -X POST "http://127.0.0.1:$PORT/auth/token" -H 'Content-Type: applicatio
 import json,sys
 d=json.load(sys.stdin)
 print('РАБОТАЕТ, роль', d.get('role')) if d.get('token') else print('НЕ РАБОТАЕТ:', d)"
+# История учеников: по ней аккаунт переезжает на новый телефон. Считаем
+# файлы, а не спрашиваем сервер: слепок отдаётся только владельцу номера.
+printf "    слепки прогресса:      "
+ls -1 "$WORK/srv/snapshots"/*.json 2>/dev/null | wc -l | \
+  python3 -c "import sys;n=sys.stdin.read().strip();print(n,'шт.')"
 printf "    ключ эфира:            "
 curl -s -u "$ADMIN" "http://127.0.0.1:$PORT/stream.json" | python3 -c "
 import json,sys;d=json.load(sys.stdin);print('на месте' if d.get('streamKey') else 'ПОТЕРЯН')"

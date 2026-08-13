@@ -6,12 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../app_state.dart';
+import '../services/account_backup.dart';
+import '../services/api_config.dart';
 import '../services/asmaul_husna.dart';
 import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
+import '../services/verify_service.dart';
 import '../services/voice_service.dart';
+import '../widgets/account_gate.dart';
 import '../widgets/dome_background.dart';
 import 'home_page.dart';
 import 'names_screen.dart';
@@ -23,7 +27,9 @@ import '../services/staff_auth.dart';
 import 'staff/staff_home.dart';
 import 'qibla_page.dart';
 import 'ramadan_screen.dart';
+import 'restore_account_screen.dart';
 import 'settings_screen.dart';
+import 'tafsir_sheet.dart';
 import 'surah_screen.dart';
 import 'tracker_page.dart';
 import 'zikr_page.dart';
@@ -50,7 +56,8 @@ class _RootScreenState extends State<RootScreen> {
   /// Тестовый хук (только debug-сборка): открывает экран сразу при запуске,
   /// `_speak`-варианты дополнительно включают озвучку — для headless-проверок
   /// на симуляторе без кликов по UI. Флаг — одноразовый файл в Documents
-  /// контейнера (значения: names | names_speak | zikr | zikr_speak):
+  /// контейнера (значения: names | names_speak | zikr | zikr_speak |
+  /// restore:<номер> | restore:<номер>:<код>):
   /// `echo names_speak > "$(xcrun simctl get_app_container booted \
   ///  kg.irfan.irfan data)/Documents/irfan_screen.txt"` перед запуском.
   Future<void> _applyDebugScreen() async {
@@ -102,7 +109,7 @@ class _RootScreenState extends State<RootScreen> {
         } else if (screen == 'quran_reset') {
           final qs = AppScope.of(context).quran!;
           qs.setMode(ReadingMode.page);
-          qs.setTranslation(translationById('kuliev'));
+          qs.setTranslation(translationById('azan'));
           qs.setReciter(reciterById('alafasy'));
         } else if (screen == 'account') {
           Navigator.push(context,
@@ -125,6 +132,35 @@ class _RootScreenState extends State<RootScreen> {
                 'session=${StaffAuth.instance.session?.login}');
             if (err == null && mounted) StaffHome.open(context);
           });
+        } else if (screen == 'restore') {
+          // `restore:<номер>` — открыть перенос аккаунта с подставленным
+          // номером; `restore:<номер>:<код>` — пройти весь путь целиком.
+          // Причина та же, что у staff_login: в симуляторе печатать нечем, а
+          // проверять надо не картинку, а цепочку код → разрешение → слепок →
+          // пересчёт серии и коинов.
+          final phone = reciterArg ?? '';
+          if (parts.length > 2) {
+            _debugRestore(phone, parts[2]);
+          } else {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => RestoreAccountScreen(phone: phone)));
+          }
+        } else if (screen == 'more') {
+          // Лист «Ещё» со всеми разделами: на нём видно, что закрыто замком
+          // без аккаунта, а тапнуть по кнопке в симуляторе нечем.
+          showMoreSheet(context,
+              onOpenZikr: () => _goTo(3), onOpenQibla: () => _goTo(0));
+        } else if (screen == 'invite') {
+          // `invite:<раздел>` — показать приглашение зарегистрироваться:
+          // кнопку на закрытой странице в симуляторе нажать нечем.
+          AccountGate.invite(context, reciterArg ?? 'Курсы');
+        } else if (screen == 'tafsir') {
+          // `tafsir:<сура>:<аят>` — открыть толкование сразу: тапнуть по
+          // кнопке на карточке аята в симуляторе нечем.
+          showTafsir(context, int.tryParse(reciterArg ?? '') ?? 2,
+              int.tryParse(parts.length > 2 ? parts[2] : '') ?? 255);
         } else if (screen == 'quran_dl') {
           // Проверка оффлайн-загрузки: качаем аль-Фатиху и печатаем итог.
           final qs = AppScope.of(context).quran!;
@@ -207,6 +243,28 @@ class _RootScreenState extends State<RootScreen> {
     );
   }
 
+  /// Отладочный путь переноса аккаунта целиком: подтвердить код, забрать
+  /// слепок, применить его и напечатать, что получилось. Только debug.
+  Future<void> _debugRestore(String phone, String code) async {
+    final state = AppScope.of(context);   // до первого await
+    debugPrint('RESTORE base=${await ApiConfig.base()}');
+    final v = await VerifyService.confirm(phone, code);
+    debugPrint('RESTORE verify=${v.status.name} ticket=${v.ticket.length}');
+    if (!v.isOk) return;
+    final r = await AccountRestore.fetch(phone, ticket: v.ticket);
+    debugPrint('RESTORE fetch=${r.status.name} name=${r.name} '
+        'spent=${r.spent} hasData=${r.hasData}');
+    if (!r.isOk) return;
+    final err = await state.restoreAccount(r,
+        phone: phone, password: 'restore123');
+    debugPrint('RESTORE apply=${err ?? 'ok'} '
+        'streak=${state.tracker?.currentStreak()} '
+        'prayers=${state.tracker?.totalReadCount()} coins=${state.coins}');
+    if (!mounted) return;
+    Navigator.push(context,
+        MaterialPageRoute(builder: (_) => const AccountScreen()));
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
@@ -220,13 +278,25 @@ class _RootScreenState extends State<RootScreen> {
       );
     }
 
+    // Без аккаунта открыты только время намаза, Коран, кибла и настройки.
+    // Страницы со своих мест не убираем — иначе поехали бы индексы всего
+    // PageView и переходы `_goTo`; вместо содержимого показываем замок.
+    final open = AccountGate.isOpen(context);
     return Scaffold(
       body: DomeBackground(
         child: PageView(
           controller: _controller,
           children: [
             _flipPage(0, const QiblaPage()),
-            _flipPage(1, const TrackerPage()),
+            _flipPage(
+                1,
+                open
+                    ? const TrackerPage()
+                    : const LockedPage(
+                        icon: Icons.track_changes,
+                        title: 'Трекер намазов',
+                        subtitle: 'Отметки намазов, серия дней и статистика '
+                            'хранятся в вашем аккаунте.')),
             _flipPage(
               2,
               HomePage(
@@ -235,8 +305,23 @@ class _RootScreenState extends State<RootScreen> {
                 onOpenQibla: () => _goTo(0),
               ),
             ),
-            _flipPage(3, const ZikrPage()),
-            _flipPage(4, const NewsPage()),
+            _flipPage(
+                3,
+                open
+                    ? const ZikrPage()
+                    : const LockedPage(
+                        icon: Icons.blur_circular,
+                        title: 'Счётчик зикров',
+                        subtitle: 'Дневные цели, обеты и коины за зикры '
+                            'считаются по вашему аккаунту.')),
+            _flipPage(
+                4,
+                open
+                    ? const NewsPage()
+                    : const LockedPage(
+                        icon: Icons.campaign_outlined,
+                        title: 'Новости',
+                        subtitle: 'Объявления устаза для учеников.')),
           ],
         ),
       ),

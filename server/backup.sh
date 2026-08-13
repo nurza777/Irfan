@@ -6,6 +6,8 @@
 #
 # Копируется всё, чего нет больше нигде и что не восстановить руками:
 #   * реестр учеников, доступы к курсам, коды и коины;
+#   * слепки прогресса учеников — история намазов и зикров, по которой аккаунт
+#     переезжает на новый телефон;
 #   * каталог курсов, новости, азкары, реестр устазов;
 #   * раскладка видео по папкам и подписи (media-folders.json);
 #   * учётки ролей и устазов, ключ публикации эфира, секрет подписи ссылок.
@@ -39,6 +41,13 @@ done
 [ -e "$ROOT/media-folders.json" ] && cp -p "$ROOT/media-folders.json" "$WORK/"
 [ -e "$ROOT/tokens.json" ]        && cp -p "$ROOT/tokens.json" "$WORK/"
 
+# Слепки прогресса: файл на ученика, единицы килобайт. Это единственная копия
+# его истории, кроме самого телефона, — ради неё перенос и делался.
+if [ -d "$ROOT/snapshots" ]; then
+  mkdir -p "$WORK/snapshots"
+  cp -p "$ROOT/snapshots"/*.json "$WORK/snapshots/" 2>/dev/null || true
+fi
+
 # Секреты. Без них после восстановления не войдёт ни один устаз и перестанут
 # открываться подписанные ссылки на уроки.
 for f in /etc/irfan/*.json; do
@@ -58,6 +67,8 @@ cat > "$WORK/README.txt" <<TXT
 
 api/            данные приложения (ученики, курсы, доступы, коды, новости)
 etc/            учётки ролей и устазов, ключ эфира, секрет подписи ссылок
+snapshots/      слепки прогресса учеников (история для переноса на новый
+                телефон); имя файла — хеш номера
 media-folders.json  раскладка видео по папкам и подписи
 tokens.json     выданные токены устазов (можно не восстанавливать — просто
                 войдут заново)
@@ -68,6 +79,8 @@ uploads-manifest.txt  опись уроков: сами файлы в копию
   cp /tmp/restore/api/*.json         /opt/irfan-server/api/
   cp /tmp/restore/media-folders.json /opt/irfan-server/
   cp /tmp/restore/etc/*.json         /etc/irfan/
+  mkdir -p /opt/irfan-server/snapshots && chmod 700 /opt/irfan-server/snapshots
+  cp /tmp/restore/snapshots/*.json   /opt/irfan-server/snapshots/ 2>/dev/null
   chmod 600 /etc/irfan/*.json
   systemctl restart irfan-api
 TXT

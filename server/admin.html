@@ -284,6 +284,10 @@ const state = {
   staff: [],
   // Сбои приложения, сгруппированные по виду ошибки.
   crashes: [],
+  // Контакт, который приложение показывает ученику на экране подтверждения
+  // номера: коды выдаёт человек, и без контакта фраза «попросите код у
+  // устаза» никуда не ведёт.
+  support: {},
   coursesRaw: {},
   teacherId: '',
   pendingCourses: [],
@@ -291,7 +295,7 @@ const state = {
 
 async function loadAll() {
   const [users, access, codes, courses, media, teachers, queue, pn, pa, staff,
-         crashes] =
+         crashes, support] =
     await Promise.all([
       getJson('/users.json', []),
       getJson('/access.json', []),
@@ -304,7 +308,9 @@ async function loadAll() {
       getJson('/azkar_pending.json', null),
       getJson('/staff.json', { staff: [] }),
       getJson('/crashes.json', []),
+      getJson('/support.json', {}),
     ]);
+  state.support = (support && typeof support === 'object') ? support : {};
   state.teachers = teachers?.teachers || [];
   state.staff = staff?.staff || [];
   // Свежие сверху: чинить надо то, что падает сейчас.
@@ -390,13 +396,45 @@ const TABS = [
 let tab = 'stats';
 
 function render() {
+  const waiting = waitingCodes();
   $('#nav').innerHTML = TABS
-    .map(([id, title]) => `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${title}</button>`)
+    .map(([id, title]) => {
+      // Ученик ждёт, пока код назовут вслух. Счётчик прямо в меню — чтобы это
+      // было видно из любого раздела, а не только когда открыт нужный.
+      const badge = (id === 'codes' && waiting) ? ` (${waiting})` : '';
+      return `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${title}${badge}</button>`;
+    })
     .join('');
   $('#nav').querySelectorAll('button').forEach((b) =>
     (b.onclick = () => { tab = b.dataset.tab; render(); }));
   $('#view').innerHTML = (TABS.find(([id]) => id === tab) || TABS[0])[2]();
   wire();
+  watchCodes();
+}
+
+/// Пока открыт раздел «Коды», панель перечитывает данные сама.
+///
+/// Обновлять всё подряд по таймеру нельзя: в «Курсах» и «Видео» это стирало
+/// бы наполовину заполненную форму под руками. А здесь смотреть не на что,
+/// кроме как на новые запросы, и нажимать «Обновить» вслепую — то же самое
+/// ожидание, только руками.
+let codesTimer = null;
+
+function watchCodes() {
+  clearInterval(codesTimer);
+  if (tab !== 'codes') return;
+  codesTimer = setInterval(async () => {
+    if (tab !== 'codes' || document.hidden) return;
+    // Форма контакта могла быть уже заполнена — сохраняем введённое.
+    const draft = $('#sp-wa') ? {
+      whatsapp: $('#sp-wa').value,
+      telegram: $('#sp-tg').value,
+      note: $('#sp-note').value,
+    } : null;
+    await loadAll();
+    if (draft) state.support = { ...state.support, ...draft };
+    render();
+  }, 20000);
 }
 
 // — Статистика
@@ -649,11 +687,28 @@ function viewAccess() {
 
 // — Коды подтверждения
 
+/// Сколько кодов ждут выдачи прямо сейчас. Раздел обновляется сам, а
+/// счётчик виден в меню: код называет человек, и пока никто не смотрит в
+/// панель, ученик просто сидит перед пустым полем ввода.
+function waitingCodes() {
+  const now = Date.now();
+  return state.codes.filter((c) => !c.used && (c.expiresAt || 0) > now).length;
+}
+
+/// Имя ученика: в записи кода оно есть только у заведённых после того, как
+/// сервер начал его подставлять, — для остальных смотрим в реестр.
+function codeName(c) {
+  if (c.name) return c.name;
+  const u = state.users.find((x) => identOf(x) === c.phone);
+  return u ? (u.name || '') : '';
+}
+
 function viewCodes() {
+  const s = state.support || {};
   return `<div class="card">
     <h2>Коды подтверждения телефона</h2>
-    <p class="muted">Автоотправка в WhatsApp не подключена — передайте код ученику сами.
-      Код живёт 10 минут, попыток — 5.</p>
+    <p class="muted">Автоотправка не подключена — код называете ученику вы.
+      Код живёт час, попыток — 5. Пока раздел открыт, он обновляется сам.</p>
     ${state.codes.length ? `<table style="margin-top:10px"><thead><tr>
       <th>Телефон</th><th>Ученик</th><th>Код</th><th>Когда</th><th>Статус</th></tr></thead><tbody>
       ${state.codes.map((c) => {
@@ -661,7 +716,7 @@ function viewCodes() {
         const valid = !c.used && !expired;
         return `<tr>
           <td><b>${esc(c.phone)}</b></td>
-          <td class="muted">${esc(c.name || '')}</td>
+          <td class="muted">${esc(codeName(c))}</td>
           <td style="font-size:20px;letter-spacing:2px">${valid ? esc(c.code) : '••••••'}</td>
           <td class="muted">${fmtDateTime(c.createdAt)}</td>
           <td>${c.used ? '<span class="tag ok">использован</span>'
@@ -669,6 +724,23 @@ function viewCodes() {
                 : '<span class="tag warn">действует</span>'}</td>
         </tr>`;
       }).join('')}</tbody></table>` : '<p class="muted">Запросов пока не было.</p>'}
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>Куда ученику писать за кодом</h2>
+    <p class="muted">Эти контакты приложение показывает кнопками на экране
+      подтверждения номера и при переносе аккаунта на новый телефон. Пусто —
+      кнопок не будет, останется одна фраза «код называет устаз».</p>
+    <p style="margin-top:10px">WhatsApp (номер)<br>
+      <input id="sp-wa" value="${esc(s.whatsapp || '')}"
+             placeholder="+996 555 12 34 56" style="max-width:340px"></p>
+    <p style="margin-top:10px">Telegram (логин без @)<br>
+      <input id="sp-tg" value="${esc(s.telegram || '')}"
+             placeholder="irfan_ustaz" style="max-width:340px"></p>
+    <p style="margin-top:10px">Пояснение для ученика<br>
+      <input id="sp-note" value="${esc(s.note || '')}" maxlength="160"
+             placeholder="Отвечаем с 9:00 до 20:00" style="max-width:520px"></p>
+    <p style="margin-top:12px"><button class="primary" id="sp-save">Сохранить</button></p>
   </div>`;
 }
 
@@ -1265,6 +1337,17 @@ function wire() {
     q.oninput = draw;
     draw();
   }
+  // — Контакт для кодов подтверждения
+  const spSave = $('#sp-save');
+  if (spSave) spSave.onclick = async () => {
+    const err = await putJson('/support.json', {
+      whatsapp: $('#sp-wa').value.trim(),
+      telegram: $('#sp-tg').value.trim(),
+      note: $('#sp-note').value.trim(),
+    });
+    toast(err || 'Контакт сохранён');
+    if (!err) { await loadAll(); render(); }
+  };
   // — Учётки устазов
   const staffAdd = $('#staff-add');
   if (staffAdd) staffAdd.onclick = async () => {

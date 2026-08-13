@@ -35,8 +35,17 @@ class VerifyResult {
   /// это всегда false — код выдаёт администратор.
   final bool delivered;
 
+  /// Одноразовое разрешение перенести аккаунт на это устройство (выдаётся
+  /// вместе с успешным подтверждением, живёт 15 минут). Сам код для этого не
+  /// годится: его человек мог продиктовать вслух, а перенос забирает аккаунт
+  /// у прежнего телефона.
+  final String ticket;
+
   const VerifyResult(this.status,
-      {this.attemptsLeft, this.retryAfter, this.delivered = false});
+      {this.attemptsLeft,
+      this.retryAfter,
+      this.delivered = false,
+      this.ticket = ''});
 
   bool get isOk => status == VerifyStatus.ok;
 }
@@ -62,7 +71,8 @@ class VerifyService {
     if (r == null) return const VerifyResult(VerifyStatus.offline);
     final (status, body) = r;
     return switch (status) {
-      200 => const VerifyResult(VerifyStatus.ok),
+      200 => VerifyResult(VerifyStatus.ok,
+          ticket: (body['restoreTicket'] as String?) ?? ''),
       403 => VerifyResult(VerifyStatus.wrongCode,
           attemptsLeft: (body['attemptsLeft'] as num?)?.toInt()),
       410 => const VerifyResult(VerifyStatus.expired),

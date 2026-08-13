@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/access_service.dart';
+import 'services/account_backup.dart';
 import 'services/account_deletion.dart';
 import 'services/auth_service.dart';
 import 'services/home_widget_service.dart';
@@ -137,10 +139,15 @@ class AppState extends ChangeNotifier {
   Future<bool?> _reportActivity() async {
     final u = auth?.current;
     if (u == null || tracker == null) return null;
-    return UserRegistry.report(u,
+    final blocked = await UserRegistry.report(u,
         prayersRead: tracker!.totalReadCount(),
         streak: tracker!.currentStreak(),
         coins: coins);
+    // Слепок для переноса на другой телефон — после отчёта: сервер должен
+    // сначала завести запись, иначе класть слепок будет не к чему.
+    // Сам класс решает, изменилось ли что-нибудь и не слишком ли часто.
+    if (blocked != true) unawaited(AccountBackup.maybeUpload(u.phone));
+    return blocked;
   }
 
   void _rescheduleNotifications() {
@@ -221,6 +228,10 @@ class AppState extends ChangeNotifier {
     await tracker!.setStatus(today!.date, key, status);
     _invalidateCoins();
     notifyListeners();
+    // Отметка намаза — то самое, что обиднее всего терять вместе с телефоном.
+    // Слепок уходит не чаще раза в четверть часа, см. AccountBackup.
+    final phone = auth?.current?.phone;
+    if (phone != null) unawaited(AccountBackup.maybeUpload(phone));
   }
 
   // --- Зикры ---
@@ -327,6 +338,51 @@ class AppState extends ChangeNotifier {
     }
     notifyListeners();
     return err;
+  }
+
+  /// Переносит аккаунт на это устройство: кладёт слепок в хранилище, заводит
+  /// локальную запись и пересобирает сервисы. null — успех, иначе текст ошибки.
+  ///
+  /// Пароль задаётся заново и намеренно: на сервере его нет и никогда не было,
+  /// он запирает аккаунт только на этом телефоне.
+  Future<String?> restoreAccount(
+    RestoreResult r, {
+    required String phone,
+    required String password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    // Слепок — до создания записи: иначе первый же _reportActivity ушёл бы на
+    // сервер с пустой историей и обнулил бы там серию и коины.
+    await AccountBackup.apply(prefs, r.data ?? const {}, serverSpent: r.spent);
+    final err = await auth!.restore(
+      name: r.name,
+      phone: phone,
+      password: password,
+      createdAt: r.createdAt ?? DateTime.now(),
+      age: r.age,
+      gender: r.gender == 'female' ? Gender.female : Gender.male,
+      city: r.city,
+    );
+    if (err != null) return err;
+    // Те же пересоздания, что и после удаления аккаунта: коины, серии и
+    // счётчики считаются из истории, а она только что стала другой.
+    tracker = await TrackerService.create();
+    zikrs = await ZikrService.create();
+    privateZikrs = await PrivateZikrService.create();
+    shop = await ShopService.create();
+    quran = await QuranService.create();
+    settings = await SettingsService.create();
+    appLang = settings!.lang;
+    _invalidateCoins();
+    _applyLocationSetting();
+    _recompute();
+    _rescheduleNotifications();
+    // Метки прошлого слепка не наши — иначе первый настоящий слепок с этого
+    // телефона ушёл бы только через сутки.
+    await AccountBackup.forgetMarks();
+    await _reportActivity();
+    notifyListeners();
+    return null;
   }
 
   Future<void> logoutAccount() async {

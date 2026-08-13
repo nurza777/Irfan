@@ -18,6 +18,8 @@ POST /comments   — чат эфира от студентов (без паро�
 POST /users      — студент сообщает профиль/активность (без пароля);
 POST /redeem     — обмен коинов на награду: баланс и код выдаёт СЕРВЕР;
 POST /verify/request, /verify/confirm — подтверждение телефона кодом;
+POST /backup     — ученик сохраняет слепок своего прогресса (см. _put_snapshot);
+POST /account/restore — перенос аккаунта на новый телефон (см. _restore_account);
 POST /teachers   — устаз заводит себя в реестре (статус pending);
 POST /teachers/flag, /teachers/delete (admin) — модерация устазов;
 POST /access/grant, /access/revoke (admin) — доступ к направлению/курсу
@@ -59,6 +61,12 @@ REPORTS = os.path.join(ROOT, 'reports.json')
 CRASHES = os.path.join(ROOT, 'crashes.json')
 # Выданные токены — тоже СОСЕДНИЙ файл: внутри api/ он раздавался бы по HTTP.
 TOKENS = os.path.join(os.path.dirname(ROOT), 'tokens.json')
+# Слепки прогресса учеников. Каталог СОСЕДНИЙ с api/ и это здесь не мелочь:
+# имя файла выводится из номера телефона, то есть внутри ROOT любой желающий
+# скачивал бы чужую историю, просто перебирая номера. Имя всё равно хешируем —
+# чтобы номера не светились и в листинге каталога на самом сервере.
+# Каталог `backups` рядом уже занят архивами backup.sh, отсюда другое имя.
+SNAPSHOTS = os.path.join(os.path.dirname(ROOT), 'snapshots')
 _MAX_COMMENTS = 200
 _MAX_REPORTS = 2000
 # Сбоев храним по видам, а не по случаям: одна и та же ошибка у
@@ -76,6 +84,11 @@ _MAX_UPLOAD_BYTES = 4 * 1024 ** 3
 # видео обрывалось бы на середине.
 MEDIA_LINK_TTL_S = 6 * 3600
 _MAX_JSON_PUT_BYTES = 8 * 1024 * 1024
+# Слепок прогресса одного ученика. Реальный размер — единицы килобайт:
+# день трекера это пять коротких пометок, а зикры — счётчик на день. Потолок
+# взят с большим запасом (примерно на тридцать лет ежедневных записей) и
+# нужен только чтобы никто не занял диск под видом истории намазов.
+_MAX_SNAPSHOT_BYTES = 192 * 1024
 
 # Корни грубой брани. Первая группа ловится с приставками («нахуй»,
 # «заебал»), вторая — только с начала слова: иначе «барсука» и «сукно»
@@ -132,10 +145,19 @@ _MAX_STAFF = 200
 _LOGIN_RE = re.compile(r'^[a-z0-9._-]{3,32}$')
 
 # Подтверждение телефона кодом.
-CODE_TTL_MS = 10 * 60 * 1000     # код живёт 10 минут
+#
+# Код живёт час, а не десять минут, как было бы при автоотправке. Канал
+# доставки — человек: ученик просит код у устаза, тот смотрит его в панели.
+# С десятиминутным сроком код успевал истечь до того, как устаз вообще
+# заметил запрос, и ученик крутился по кругу «запросить снова».
+CODE_TTL_MS = 60 * 60 * 1000
 CODE_MAX_ATTEMPTS = 5            # неверных попыток на код
 CODE_RESEND_MS = 60 * 1000       # не чаще одного кода в минуту
 _MAX_VERIFY = 5000
+# Разрешение на перенос аккаунта, выдаётся после верного кода. Отдельная
+# одноразовая бумажка, а не сам код: код ученик мог продиктовать вслух,
+# а перенос забирает аккаунт у прежнего телефона.
+RESTORE_TICKET_TTL_MS = 15 * 60 * 1000
 
 # Ограничение частоты: сколько запросов с одного адреса за окно.
 RATE_WINDOW_S = 60
@@ -446,7 +468,8 @@ def _role(headers):
 _PUT_ALLOWED = ('/courses.json', '/news.json', '/azkar.json',
                 '/courses_pending.json', '/news_pending.json',
                 '/azkar_pending.json', '/users.json', '/admin.json',
-                '/status.json', '/live-title.txt', '/teachers.json')
+                '/status.json', '/live-title.txt', '/teachers.json',
+                '/support.json')
 
 
 def _put_allowed(path):
@@ -751,7 +774,11 @@ def _request_code(data):
             wait = (CODE_RESEND_MS - (now - int(last['createdAt']))) // 1000
             return 429, {'error': 'too soon', 'retryAfter': wait}
         code = f'{secrets.randbelow(1000000):06d}'
+        # Имя из реестра — чтобы в панели было видно, КОГО спрашивают. Код
+        # выдаёт человек, и один номер в столбце ему ничего не говорит.
+        rec = _find_user(_load_users(), phone)
         entry = {'phone': phone, 'code': code,
+                 'name': (rec or {}).get('name', ''),
                  'createdAt': now, 'expiresAt': now + CODE_TTL_MS,
                  'attempts': 0, 'used': False, 'delivered': False}
         entry['delivered'] = _send_code(phone, code)
@@ -785,13 +812,171 @@ def _confirm_code(data):
             return 403, {'error': 'wrong code', 'attemptsLeft': max(0, left)}
         entry['used'] = True
         entry['confirmedAt'] = now
+        # Разрешение на перенос аккаунта. Выдаём всегда, а не только когда
+        # запись есть: иначе ответ сервера говорил бы постороннему, заведён
+        # ли аккаунт на этом номере.
+        ticket = secrets.token_urlsafe(24)
+        entry['ticket'] = ticket
+        entry['ticketExpires'] = now + RESTORE_TICKET_TTL_MS
         _save_verify(items)
         users = _load_users()
         rec = _find_user(users, phone)
         if rec is not None:
             rec['verified'] = True
             _save_users(users)
-    return 200, {'verified': True}
+    return 200, {'verified': True, 'restoreTicket': ticket}
+
+
+# ——— Перенос аккаунта на другой телефон ———
+#
+# Аккаунт ученика живёт на телефоне: пароля на сервере нет, вся история
+# (трекер намазов, зикры, обеты, закладки Корана) лежит в SharedPreferences.
+# Пока этого раздела не было, смена телефона означала потерю серии, коинов и
+# всей истории без всякой возможности вернуть их — и это была самая частая
+# настоящая потеря у людей, которые пользуются приложением каждый день.
+#
+# Устроено так: приложение само присылает сюда слепок своего хранилища, а на
+# новом телефоне забирает его обратно. Сервер в содержимое не смотрит и не
+# считает по нему ничего — это непрозрачный ящик, который вернут владельцу.
+# Заработанное считается по-прежнему по полям реестра (prayersRead/coins) с
+# теми же потолками, поэтому подложным слепком коинов себе не прибавить.
+
+
+def _snapshot_path(phone):
+    name = hashlib.sha256(('irfan-snap:' + phone).encode()).hexdigest()[:32]
+    return os.path.join(SNAPSHOTS, name + '.json')
+
+
+def _load_snapshot(phone):
+    return _read_json(_snapshot_path(phone), None)
+
+
+def _drop_snapshot(phone):
+    """Снести слепок — вместе с аккаунтом. Без этого удаление аккаунта
+    оставляло бы на сервере всю историю человека (App Store 5.1.1(v))."""
+    try:
+        os.remove(_snapshot_path(phone))
+        return True
+    except OSError:
+        return False
+
+
+def _put_snapshot(data):
+    """Ученик сохраняет слепок своего прогресса.
+
+    Право на запись — тот же ключ устройства, что и у остальных ученических
+    ручек: иначе знающий номер затирал бы чужую историю пустым слепком.
+    """
+    ident = _identity(data)
+    if not ident:
+        return 400, {'error': 'bad phone'}
+    blob = data.get('data')
+    if not isinstance(blob, dict):
+        return 400, {'error': 'bad data'}
+    raw = json.dumps(blob, ensure_ascii=False, separators=(',', ':'))
+    if len(raw.encode('utf-8')) > _MAX_SNAPSHOT_BYTES:
+        return 413, {'error': 'too large'}
+    now = int(time.time() * 1000)
+    with _lock:
+        users = _load_users()
+        rec = _find_user(users, ident)
+        if rec is None:
+            # Слепок без записи в реестре осиротеет: восстанавливать будет
+            # некуда и некому. Приложение всё равно первым делом шлёт профиль.
+            return 404, {'error': 'no user'}
+        if not _student_ok(rec, data):
+            return 403, {'error': 'forbidden'}
+        # _student_ok мог закрепить запись за этим устройством — сохраняем.
+        _save_users(users)
+        os.makedirs(SNAPSHOTS, exist_ok=True)
+        os.chmod(SNAPSHOTS, 0o700)
+        path = _snapshot_path(ident)
+        # Через временный файл: оборванная запись оставила бы обрезанный JSON,
+        # то есть человек лишился бы истории ровно в тот момент, когда она
+        # ему и понадобилась.
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({'phone': ident, 'updatedAt': now, 'data': blob}, f,
+                      ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    return 201, {'ok': True, 'updatedAt': now}
+
+
+def _ticket_ok(phone, ticket, now):
+    """Гасит одноразовое разрешение на перенос. Вызывать под _lock."""
+    if len(ticket) < 16:
+        return False
+    items = _load_verify()
+    for e in reversed(items):
+        if e.get('phone') != phone or e.get('ticketUsed'):
+            continue
+        have = e.get('ticket')
+        if not have or now > int(e.get('ticketExpires') or 0):
+            continue
+        if secrets.compare_digest(ticket, str(have)):
+            e['ticketUsed'] = True
+            e['ticketUsedAt'] = now
+            _save_verify(items)
+            return True
+    return False
+
+
+def _restore_account(data):
+    """Отдаёт аккаунт новому телефону.
+
+    Два пути внутрь:
+      * ключ устройства уже записан в реестре — это тот же телефон после
+        переустановки (Keychain её переживает, а SharedPreferences нет), и
+        код тут спрашивать не за что;
+      * одноразовое разрешение после подтверждения номера — это новый
+        телефон, и запись переезжает на него.
+
+    Переезд забирает право писать у прежнего устройства: два телефона с одной
+    историей разошлись бы, и чей слепок последний, тот и затёр бы остальные.
+    """
+    ident = _identity(data)
+    if not ident:
+        return 400, {'error': 'bad phone'}
+    got = _auth_key(data.get('secret'))
+    ticket = str(data.get('ticket') or '')[:64]
+    now = int(time.time() * 1000)
+    with _lock:
+        users = _load_users()
+        rec = _find_user(users, ident)
+        if rec is None:
+            return 404, {'error': 'no account'}
+        if rec.get('blocked'):
+            return 403, {'error': 'blocked'}
+        have = rec.get('authKey')
+        same_device = bool(got) and bool(have) and \
+            secrets.compare_digest(got, have)
+        if not same_device:
+            if not got:
+                # Без ключа запись не за кем закреплять, а отдавать историю
+                # неизвестно кому — тем более. Проверяем ДО разрешения:
+                # _ticket_ok его гасит, и заведомо безнадёжная попытка
+                # сжигала бы бумажку, за которой человек ходил к устазу.
+                return 400, {'error': 'no device key'}
+            if not _ticket_ok(ident, ticket, now):
+                return 403, {'error': 'forbidden'}
+            rec['authKey'] = got
+            rec['movedAt'] = now
+            _save_users(users)
+        snap = _load_snapshot(ident)
+        rec = dict(rec)     # дальше читаем уже вне замка
+    return 200, {
+        'profile': {k: rec.get(k) for k in (
+            'name', 'gender', 'age', 'city', 'verified', 'accountCreatedAt',
+            'prayersRead', 'streak', 'coins', 'spent', 'balance')},
+        'access': _access_for(ident),
+        # Потраченное берётся из реестра, а не из слепка: слепок мог быть
+        # снят до выкупа награды, и восстановление вернуло бы уже потраченные
+        # коины в кошелёк.
+        'spent': int(rec.get('spent') or 0),
+        'data': (snap or {}).get('data'),
+        'updatedAt': (snap or {}).get('updatedAt'),
+    }
 
 
 # ── Устазы ───────────────────────────────────────────────────────────────
@@ -1440,6 +1625,10 @@ def _delete_user(data):
         if len(rest) == len(users):
             return 404, {'error': 'no user'}
         _save_users(rest)
+        # Слепок прогресса без записи в реестре восстановить всё равно
+        # некуда (_restore_account требует запись) — оставлять его значило бы
+        # копить на диске историю людей, которых админ уже убрал.
+        _drop_snapshot(ident)
         return 200, {'student': ident, 'deleted': True}
 
 
@@ -1630,6 +1819,9 @@ def _delete_account(data):
         left = [c for c in codes if _norm_phone(c.get('phone')) != ident]
         if len(left) != len(codes):
             _save_verify(left)
+        # Слепок прогресса — это вся история человека; без этой строки
+        # «удалить аккаунт» оставляло бы её лежать на сервере.
+        _drop_snapshot(ident)
     return 200, {'deleted': removed}
 
 
@@ -1933,6 +2125,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
                   '/redeem', '/auth/token', '/account/delete',
+                  '/account/restore', '/backup',
                   '/comments/report', '/media/link', '/crash')
 
     def do_POST(self):
@@ -2036,6 +2229,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if p == '/account/delete':
             code, body = _delete_account(data)
+            self._send_json(code, body)
+            return
+        if p == '/backup':
+            code, body = _put_snapshot(data)
+            self._send_json(code, body)
+            return
+        if p == '/account/restore':
+            code, body = _restore_account(data)
             self._send_json(code, body)
             return
         if p == '/auth/token':

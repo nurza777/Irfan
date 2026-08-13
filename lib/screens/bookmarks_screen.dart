@@ -186,8 +186,11 @@ class _List extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      quran.getVerseTranslation(surah, verse,
-                          translation: quran.Translation.ruKuliev),
+                      // Через сервис, а не из пакета `quran` напрямую: тот
+                      // отдаёт Кулиева, права на которого не подтверждены, и
+                      // закладки оказывались единственным местом, где он
+                      // всё ещё показывался.
+                      qs.translationOf(surah, verse),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(

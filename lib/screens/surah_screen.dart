@@ -12,9 +12,10 @@ import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 import 'quran_settings_sheet.dart';
+import 'tafsir_sheet.dart';
 import 'tajwid_sheet.dart';
 
-/// Чтение суры: арабский текст с подсветкой таджвида, перевод Кулиева,
+/// Чтение суры: арабский текст с подсветкой таджвида, перевод Azan.ru,
 /// закладки, заметки и аудио (Мишари Рашид аль-Афаси): тап по аяту или
 /// кнопка в шапке — непрерывное чтение до конца суры. Режим — из настроек.
 class SurahScreen extends StatefulWidget {
@@ -296,6 +297,11 @@ class _VerseCard extends StatelessWidget {
                       : Icons.note_add_outlined,
                   active: note != null && note.isNotEmpty,
                   onTap: () => _editNote(context),
+                ),
+                _VerseAction(
+                  icon: Icons.menu_book_outlined,
+                  active: false,
+                  onTap: () => showTafsir(context, surah, verse),
                 ),
                 _VerseAction(
                   icon: bookmarked

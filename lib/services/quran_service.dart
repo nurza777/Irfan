@@ -3,7 +3,6 @@ import 'dart:io' show gzip;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:quran/quran.dart' as quran;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'quran_translations.dart';
@@ -97,17 +96,15 @@ class QuranService extends ChangeNotifier {
 
   // --- Перевод ---
 
-  /// Декодированные тексты переводов из ассетов, кэш по id (Кулиев — не тут,
-  /// он берётся из пакета `quran`).
+  /// Декодированные тексты переводов из ассетов, кэш по id.
   final Map<String, Map<String, String>> _trCache = {};
   String? _trLoading;
 
   QuranTranslation get translation =>
       translationById(_prefs.getString('quran_translation'));
 
-  /// Готов ли текст выбранного перевода к показу (пакетный Кулиев — всегда).
-  bool get translationReady =>
-      translation.asset == null || _trCache.containsKey(translation.id);
+  /// Готов ли текст выбранного перевода к показу.
+  bool get translationReady => _trCache.containsKey(translation.id);
 
   Future<void> setTranslation(QuranTranslation t) async {
     await _prefs.setString('quran_translation', t.id);
@@ -117,14 +114,12 @@ class QuranService extends ChangeNotifier {
 
   /// Подгружает и распаковывает gzip-ассет перевода один раз, затем уведомляет.
   Future<void> ensureTranslationLoaded(QuranTranslation t) async {
-    if (t.asset == null ||
-        _trCache.containsKey(t.id) ||
-        _trLoading == t.id) {
+    if (_trCache.containsKey(t.id) || _trLoading == t.id) {
       return;
     }
     _trLoading = t.id;
     try {
-      final data = await rootBundle.load(t.asset!);
+      final data = await rootBundle.load(t.asset);
       final jsonStr =
           utf8.decode(gzip.decode(data.buffer.asUint8List()));
       _trCache[t.id] =
@@ -139,14 +134,8 @@ class QuranService extends ChangeNotifier {
 
   /// Текст перевода аята для выбранного перевода. Пустая строка — если
   /// ассет ещё грузится.
-  String translationOf(int surah, int verse) {
-    final t = translation;
-    if (t.asset == null) {
-      return quran.getVerseTranslation(surah, verse,
-          translation: quran.Translation.ruKuliev);
-    }
-    return _trCache[t.id]?['$surah:$verse'] ?? '';
-  }
+  String translationOf(int surah, int verse) =>
+      _trCache[translation.id]?['$surah:$verse'] ?? '';
 
   Future<void> setMode(ReadingMode m) async {
     await _prefs.setString('quran_mode', m.name);
