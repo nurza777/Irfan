@@ -51,3 +51,8 @@ android/key.properties
 
 # Резервные копии, вытянутые с сервера (в них секреты).
 irfan-backups/
+
+# Сканы писем и доверенностей — там паспортные данные, репозиторий публичный
+store/rights/*.pdf
+store/rights/*.jpg
+store/rights/scans/
