@@ -35,8 +35,9 @@ class TafsirService {
     return _loading ??= () async {
       try {
         final raw = await rootBundle.load(_asset);
-        final json = utf8.decode(gzip.decode(raw.buffer.asUint8List()));
-        _data = jsonDecode(json) as Map<String, dynamic>;
+        // Пять мегабайт текста: в главном потоке это заметная пауза при
+        // первом открытии толкования, поэтому распаковываем в отдельном.
+        _data = await compute(_decodeTafsir, raw.buffer.asUint8List());
       } catch (e) {
         debugPrint('tafsir load error: $e');
         _data = const {};
@@ -124,3 +125,7 @@ class TafsirEntry {
   String get sourceUrl =>
       slug.isEmpty ? 'https://azan.ru/tafsir' : 'https://azan.ru/tafsir/$slug';
 }
+
+/// Считается в отдельном потоке: только распаковка и разбор.
+Map<String, dynamic> _decodeTafsir(Uint8List bytes) =>
+    jsonDecode(utf8.decode(gzip.decode(bytes))) as Map<String, dynamic>;

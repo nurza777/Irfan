@@ -1,8 +1,10 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'api_config.dart';
+import 'response_cache.dart';
 import 'url_safety.dart';
 
 /// Каталог: устазы → направления → курсы → уроки.
@@ -140,7 +142,17 @@ class RemoteLesson {
 
 /// Каталог, который публикует устаз из приложения «Ирфан Устаз».
 class CoursesService {
-  /// null — сервер недоступен (покажем заглушку).
+  static const cacheKey = 'courses';
+
+  /// Каталог с прошлого захода. Экран рисует его сразу, не дожидаясь сети;
+  /// null — заходов ещё не было.
+  static Future<Catalog?> cached() async {
+    final body = await ResponseCache.read(cacheKey);
+    return body == null ? null : _parse(body);
+  }
+
+  /// null — сервер недоступен (покажем сохранённое, а если и его нет —
+  /// заглушку).
   static Future<Catalog?> fetch() async {
     try {
       final base = await ApiConfig.base();
@@ -148,9 +160,21 @@ class CoursesService {
           .get(Uri.parse('$base/courses.json'))
           .timeout(const Duration(seconds: 8));
       if (r.statusCode != 200) return null;
-      final j =
-          Map<String, dynamic>.from(jsonDecode(utf8.decode(r.bodyBytes)));
-      return Catalog.fromJson(j);
+      final body = utf8.decode(r.bodyBytes);
+      final catalog = _parse(body);
+      // Сохраняем только то, что разобралось: битый ответ незачем показывать
+      // в следующий раз вместо содержимого.
+      if (catalog != null) await ResponseCache.write(cacheKey, body);
+      return catalog;
+    } catch (e) {
+      debugPrint('courses fetch error: $e');
+      return null;
+    }
+  }
+
+  static Catalog? _parse(String body) {
+    try {
+      return Catalog.fromJson(Map<String, dynamic>.from(jsonDecode(body)));
     } catch (_) {
       return null;
     }

@@ -45,8 +45,25 @@ class _CoursesPageState extends State<CoursesPage> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
+    // Сперва — сохранённое с прошлого захода: список появляется сразу, а не
+    // после запроса на сервер. Если заходов ещё не было, останется кружок.
+    final saved = await Future.wait([
+      CoursesService.cached(),
+      TeachersService.cached(),
+    ]);
+    if (!mounted) return;
+    final savedCatalog = saved[0] as Catalog?;
+    final savedRegistry = saved[1] as List<Teacher>?;
+    final hadSaved = savedCatalog != null || savedRegistry != null;
+    if (hadSaved) {
+      setState(() {
+        _entries = _merge(savedCatalog, savedRegistry);
+        _loading = false;
+      });
+    }
+
     // Реестр и каталог тянем разом: это два запроса к одному серверу,
-    // и ждать их по очереди значит удваивать паузу перед первым кадром.
+    // и ждать их по очереди значит удваивать паузу.
     final results = await Future.wait([
       CoursesService.fetch(),
       TeachersService.fetch(),
@@ -54,6 +71,12 @@ class _CoursesPageState extends State<CoursesPage> {
     if (!mounted) return;
     final catalog = results[0] as Catalog?;
     final registry = results[1] as List<Teacher>?;
+    // Сеть не ответила, а сохранённое есть — оставляем его на экране:
+    // подменять уроки заглушкой «нет связи» было бы шагом назад.
+    if (catalog == null && registry == null && hadSaved) {
+      setState(() => _loading = false);
+      return;
+    }
     setState(() {
       _offline = catalog == null && registry == null;
       _entries = _merge(catalog, registry);

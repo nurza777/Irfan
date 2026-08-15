@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -90,6 +91,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    final startedAt = DateTime.now();
     tracker = await TrackerService.create();
     zikrs = await ZikrService.create();
     auth = await AuthService.create();
@@ -98,7 +100,8 @@ class AppState extends ChangeNotifier {
     quran = await QuranService.create();
     shop = await ShopService.create();
     privateZikrs = await PrivateZikrService.create();
-    await HomeWidgetService.init();
+    // Запускаем, но не ждём: см. HomeWidgetService.init.
+    unawaited(HomeWidgetService.init());
     await WallpaperService.instance.init();
     await WatchProgress.instance.init();
     _applyLocationSetting();
@@ -122,6 +125,12 @@ class AppState extends ChangeNotifier {
       // время вообще не нужно. Обратный отсчёт слушает [clock] сам.
       clock.value = now;
     });
+    if (kDebugMode) {
+      // Сколько прошло от начала подготовки до кадра, на котором человек
+      // видит времена намаза. Меряется, а не оценивается на глаз.
+      debugPrint('STARTUP init->первый экран: '
+          '${DateTime.now().difference(startedAt).inMilliseconds} мс');
+    }
     notifyListeners();
     // Локация — в фоне, чтобы не блокировать первый кадр.
     _autoLocation = await PrayerService.resolveLocation();

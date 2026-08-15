@@ -12,7 +12,18 @@ class HomeWidgetService {
   static const _appGroup = 'group.kg.irfan.irfan';
   static const _iOSWidget = 'IrfanWidget';
 
-  static Future<void> init() async {
+  static Future<void>? _ready;
+
+  /// Назначение общей группы идёт через системный канал и занимает заметное
+  /// время — на симуляторе четверть секунды. Раньше эту четверть секунды ждал
+  /// весь экран: `init` стоял в цепочке подготовки перед показом времён
+  /// намаза, хотя к виджету на рабочем столе первый кадр приложения никакого
+  /// отношения не имеет. Теперь вызов запускается и не ждётся, а [update]
+  /// сам дожидается готовности перед записью — виджет по-прежнему получает
+  /// данные с первого же пересчёта.
+  static Future<void> init() => _ready ??= _init();
+
+  static Future<void> _init() async {
     try {
       await HomeWidget.setAppGroupId(_appGroup);
     } catch (e) {
@@ -23,6 +34,7 @@ class HomeWidgetService {
   /// Записывает времена намаза текущего дня и обновляет виджет.
   static Future<void> update(DayPrayerTimes times, String city) async {
     try {
+      await init();
       final hhmm = DateFormat('HH:mm');
       await HomeWidget.saveWidgetData<String>('city', city);
       await HomeWidget.saveWidgetData<String>(

@@ -21,7 +21,21 @@ class _NewsScreenState extends State<NewsScreen> {
   @override
   void initState() {
     super.initState();
-    _future = NewsService.fetch();
+    _future = _load();
+  }
+
+  /// Сохранённая лента показывается сразу, свежая подменяет её, когда
+  /// придёт. Пустой ответ не затирает показанное: сетевая ошибка и «новостей
+  /// нет» выглядят одинаково — пустым списком, и лучше оставить прежнее.
+  Future<List<NewsItem>> _load() async {
+    final saved = await NewsService.cached();
+    if (saved == null) return NewsService.fetch();
+    NewsService.fetch().then((fresh) {
+      if (mounted && fresh.isNotEmpty) {
+        setState(() => _future = Future.value(fresh));
+      }
+    });
+    return saved;
   }
 
   Future<void> _refresh() async {
@@ -87,7 +101,21 @@ class _NewsPageState extends State<NewsPage> {
   @override
   void initState() {
     super.initState();
-    _future = NewsService.fetch();
+    _future = _load();
+  }
+
+  /// Сохранённая лента показывается сразу, свежая подменяет её, когда
+  /// придёт. Пустой ответ не затирает показанное: сетевая ошибка и «новостей
+  /// нет» выглядят одинаково — пустым списком, и лучше оставить прежнее.
+  Future<List<NewsItem>> _load() async {
+    final saved = await NewsService.cached();
+    if (saved == null) return NewsService.fetch();
+    NewsService.fetch().then((fresh) {
+      if (mounted && fresh.isNotEmpty) {
+        setState(() => _future = Future.value(fresh));
+      }
+    });
+    return saved;
   }
 
   Future<void> _refresh() async {

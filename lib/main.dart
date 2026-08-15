@@ -16,14 +16,21 @@ Future<void> main() async {
   // Ставим до всего остального: падение на старте — самое ценное, что
   // хочется увидеть, и раньше его не видел никто.
   CrashReporter.install();
-  // Все экраны свёрстаны под портрет; альбомная ориентация нужна ровно в
-  // одном месте — в полноэкранном плеере урока, и он включает её сам.
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await initializeDateFormatting('ru');
-  // Опись записей — до первого кадра: экраны по ней решают,
-  // показывать ли кнопку озвучки, и решают синхронно.
-  await VoiceService.instance.loadCatalog();
-  final prefs = await SharedPreferences.getInstance();
+  // Четыре независимых шага: ориентация, названия месяцев, опись записей и
+  // настройки. По очереди они складывались в сумму задержек, хотя ждать друг
+  // друга им незачем.
+  final prefsFuture = SharedPreferences.getInstance();
+  await Future.wait([
+    // Все экраны свёрстаны под портрет; альбомная ориентация нужна ровно в
+    // одном месте — в полноэкранном плеере урока, и он включает её сам.
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]),
+    initializeDateFormatting('ru'),
+    // Опись записей — до первого кадра: экраны по ней решают,
+    // показывать ли кнопку озвучки, и решают синхронно.
+    VoiceService.instance.loadCatalog(),
+    prefsFuture,
+  ]);
+  final prefs = await prefsFuture;
   // Уровень оформления — до первого кадра: фон и стеклянные карточки
   // спрашивают его синхронно, при построении.
   VisualEffects.instance.load(prefs);

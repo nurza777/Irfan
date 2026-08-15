@@ -120,10 +120,10 @@ class QuranService extends ChangeNotifier {
     _trLoading = t.id;
     try {
       final data = await rootBundle.load(t.asset);
-      final jsonStr =
-          utf8.decode(gzip.decode(data.buffer.asUint8List()));
-      _trCache[t.id] =
-          Map<String, String>.from(jsonDecode(jsonStr) as Map);
+      // Распаковка и разбор — в отдельном потоке: это 1,7 МБ текста и 6236
+      // записей, на телефоне десятки миллисекунд, и делать их в главном
+      // потоке значит подвесить экран ровно в момент открытия суры.
+      _trCache[t.id] = await compute(_decodeTranslation, data.buffer.asUint8List());
     } catch (e) {
       debugPrint('QuranService: failed to load translation ${t.id}: $e');
     } finally {
@@ -223,3 +223,9 @@ class QuranService extends ChangeNotifier {
     notifyListeners();
   }
 }
+
+/// Выполняется в отдельном потоке — только чистые вычисления, без обращений
+/// к настройкам и ассетам (в другом потоке их бы не было).
+Map<String, String> _decodeTranslation(Uint8List bytes) =>
+    Map<String, String>.from(
+        jsonDecode(utf8.decode(gzip.decode(bytes))) as Map);

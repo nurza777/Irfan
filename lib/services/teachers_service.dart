@@ -1,8 +1,10 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'api_config.dart';
+import 'response_cache.dart';
 
 /// Устаз в реестре: заводится сам из приложения «Ирфан Устаз», ученикам
 /// показывается только после одобрения админом.
@@ -32,6 +34,14 @@ class Teacher {
 class TeachersService {
   /// null — сервер недоступен. Пустой список — реестр пока не заполнен;
   /// это не то же самое, и экран показывает разные сообщения.
+  static const cacheKey = 'teachers';
+
+  /// Реестр с прошлого захода — чтобы список устазов появился сразу.
+  static Future<List<Teacher>?> cached() async {
+    final body = await ResponseCache.read(cacheKey);
+    return body == null ? null : _parse(body);
+  }
+
   static Future<List<Teacher>?> fetch() async {
     try {
       final base = await ApiConfig.base();
@@ -42,7 +52,19 @@ class TeachersService {
       // просто пока никто не зарегистрировался.
       if (r.statusCode == 404) return const [];
       if (r.statusCode != 200) return null;
-      final j = jsonDecode(utf8.decode(r.bodyBytes));
+      final body = utf8.decode(r.bodyBytes);
+      final list = _parse(body);
+      if (list != null) await ResponseCache.write(cacheKey, body);
+      return list;
+    } catch (e) {
+      debugPrint('teachers fetch error: $e');
+      return null;
+    }
+  }
+
+  static List<Teacher>? _parse(String body) {
+    try {
+      final j = jsonDecode(body);
       final raw = j is Map ? j['teachers'] : j;
       if (raw is! List) return const [];
       return raw
