@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_state.dart';
 import 'services/crash_reporter.dart';
+import 'services/visual_effects.dart';
 import 'services/voice_service.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/root_screen.dart';
@@ -23,6 +24,9 @@ Future<void> main() async {
   // показывать ли кнопку озвучки, и решают синхронно.
   await VoiceService.instance.loadCatalog();
   final prefs = await SharedPreferences.getInstance();
+  // Уровень оформления — до первого кадра: фон и стеклянные карточки
+  // спрашивают его синхронно, при построении.
+  VisualEffects.instance.load(prefs);
   final onboardingDone = prefs.getBool('onboarding_done') ?? false;
 
   final state = AppState();

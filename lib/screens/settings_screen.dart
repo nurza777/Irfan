@@ -4,6 +4,7 @@ import '../app_state.dart';
 import '../services/lang.dart';
 import '../services/prayer_service.dart';
 import '../services/settings_service.dart';
+import '../services/visual_effects.dart';
 import '../theme.dart';
 import 'staff/staff_home.dart';
 import 'wallpaper_sheet.dart';
@@ -55,6 +56,11 @@ class SettingsScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 14),
+              const FadeSlideIn(
+                delay: Duration(milliseconds: 30),
+                child: _EffectsCard(),
               ),
               const SizedBox(height: 14),
               FadeSlideIn(
@@ -415,6 +421,78 @@ class _NotificationsCardState extends State<_NotificationsCard> {
   /// «выбрано».
   Widget _chip(String text, bool active, VoidCallback onTap) =>
       SelectPill(label: text, selected: active, onTap: onTap, dense: true);
+}
+
+/// Выбор уровня оформления.
+///
+/// Стоит в настройках, а не подбирается сам: надёжно отличить слабый телефон
+/// от сильного изнутри приложения нечем — модель и объём памяти о плавности
+/// говорят мало. Поэтому по умолчанию берётся уровень, безопасный для
+/// платформы (на Android — экономный), а решает человек.
+class _EffectsCard extends StatefulWidget {
+  const _EffectsCard();
+
+  @override
+  State<_EffectsCard> createState() => _EffectsCardState();
+}
+
+class _EffectsCardState extends State<_EffectsCard> {
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: VisualEffects.instance,
+      builder: (context, _) {
+        final level = VisualEffects.instance.level;
+        return GlassCard(
+          radius: 20,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _SectionTitle(
+                  icon: Icons.auto_awesome_outlined, title: t('Оформление')),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: SelectPill(
+                      label: t('Полное'),
+                      selected: level == EffectsLevel.full,
+                      onTap: () => VisualEffects.instance
+                          .setLevel(EffectsLevel.full),
+                      dense: true,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: SelectPill(
+                      label: t('Экономное'),
+                      selected: level == EffectsLevel.light,
+                      onTap: () => VisualEffects.instance
+                          .setLevel(EffectsLevel.light),
+                      dense: true,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                level == EffectsLevel.full
+                    ? t('Матовое стекло и живые обои. Красивее, но на слабых '
+                        'телефонах приложение может подтормаживать.')
+                    : t('Без размытия и движения обоев. Выглядит проще, зато '
+                        'листается плавно.'),
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.4,
+                    color: Colors.white.withValues(alpha: 0.7)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _SectionTitle extends StatelessWidget {

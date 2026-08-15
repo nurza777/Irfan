@@ -14,6 +14,7 @@ import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
 import '../services/verify_service.dart';
+import '../services/visual_effects.dart';
 import '../services/voice_service.dart';
 import '../widgets/account_gate.dart';
 import '../widgets/dome_background.dart';
@@ -111,6 +112,12 @@ class _RootScreenState extends State<RootScreen> {
           qs.setMode(ReadingMode.page);
           qs.setTranslation(translationById('azan'));
           qs.setReciter(reciterById('alafasy'));
+        } else if (screen == 'effects') {
+          // `effects:full|light` — уровень оформления. По умолчанию он разный
+          // на разных платформах, а сравнивать оба вида надо на одном экране.
+          VisualEffects.instance.setLevel(reciterArg == 'light'
+              ? EffectsLevel.light
+              : EffectsLevel.full);
         } else if (screen == 'account') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const AccountScreen()));

@@ -1,4 +1,3 @@
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -9,6 +8,7 @@ import '../services/quran_translations.dart';
 import '../services/reciters.dart';
 import '../services/lang.dart';
 import '../theme.dart';
+import '../widgets/glass.dart';
 
 /// Настройки чтения Корана: режим, отображение (арабский/перевод/таджвид),
 /// размер шрифта, чтец, перевод. Открывается на половину экрана, фиксируется
@@ -41,10 +41,9 @@ class _QuranSettings extends StatelessWidget {
         return ClipRRect(
           borderRadius:
               const BorderRadius.vertical(top: Radius.circular(24)),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+          child: MaybeBlur(
             child: Container(
-              color: AppColors.skyBottom.withValues(alpha: 0.9),
+              color: AppColors.skyBottom.withValues(alpha: sheetAlpha(0.9)),
               child: AnimatedBuilder(
                 animation: qs,
                 builder: (context, _) {

@@ -1,10 +1,10 @@
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
 import '../services/tajwid.dart';
 import '../services/lang.dart';
 import '../theme.dart';
+import '../widgets/glass.dart';
 
 /// Легенда правил таджвида: список правил с цветом; тап — пояснение.
 Future<void> showTajwidLegend(BuildContext context) {
@@ -22,10 +22,9 @@ class _TajwidLegend extends StatelessWidget {
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+      child: MaybeBlur(
         child: Container(
-          color: AppColors.skyBottom.withValues(alpha: 0.9),
+          color: AppColors.skyBottom.withValues(alpha: sheetAlpha(0.9)),
           child: SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
@@ -99,10 +98,9 @@ class _TajwidLegend extends StatelessWidget {
       builder: (_) => ClipRRect(
         borderRadius:
             const BorderRadius.vertical(top: Radius.circular(24)),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: MaybeBlur(
           child: Container(
-            color: AppColors.skyBottom.withValues(alpha: 0.92),
+            color: AppColors.skyBottom.withValues(alpha: sheetAlpha(0.92)),
             child: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),

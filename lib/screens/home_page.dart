@@ -8,6 +8,7 @@ import '../services/lang.dart';
 import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
 import '../services/tracker_service.dart';
+import '../services/visual_effects.dart';
 import '../theme.dart';
 import '../widgets/account_gate.dart';
 import '../widgets/glass.dart';
@@ -333,19 +334,24 @@ class _BarButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return PressableScale(
-      onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: Container(
+    return ListenableBuilder(
+      listenable: VisualEffects.instance,
+      builder: (context, _) => _build(VisualEffects.instance.blur),
+    );
+  }
+
+  Widget _build(bool blurred) {
+    // Кнопок в панели три, и они видны на главной всё время — три размытия
+    // подряд там, где хватает плотной заливки.
+    final base = accent ? 0.30 : 0.24;
+    final inner = Container(
             // Иконка и подпись в строку: столбиком кнопка выходила в
             // полсотни точек высотой и занимала низ экрана целиком.
             padding:
                 const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: accent ? 0.30 : 0.24),
+              color: Colors.black
+                  .withValues(alpha: blurred ? base : base + 0.12),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
                   color: accent
@@ -367,8 +373,17 @@ class _BarButton extends StatelessWidget {
                         color: accent ? AppColors.cream : AppColors.textSoft)),
               ],
             ),
-          ),
-        ),
+    );
+    return PressableScale(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: blurred
+            ? BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                child: inner,
+              )
+            : inner,
       ),
     );
   }
@@ -436,14 +451,10 @@ void showMoreSheet(
         snap: true,
         snapSizes: const [0.7],
         expand: false,
-        builder: (ctx, scrollController) => ClipRRect(
-        borderRadius:
-            const BorderRadius.vertical(top: Radius.circular(24)),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-          child: Material(
-            color: AppColors.skyBottom.withValues(alpha: 0.82),
-            child: SafeArea(
+        builder: (ctx, scrollController) => GlassSheet(
+          opacity: 0.82,
+          material: true,
+          child: SafeArea(
               child: ListView(
                 controller: scrollController,
                 padding: EdgeInsets.zero,
@@ -539,8 +550,6 @@ void showMoreSheet(
                 ],
               ),
             ),
-          ),
-        ),
         ),
       ),
     );

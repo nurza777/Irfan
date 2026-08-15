@@ -2,10 +2,17 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../services/visual_effects.dart';
 import '../theme.dart';
 
 /// Стеклянный блок: блюр того, что за ним, полупрозрачная заливка
 /// с лёгким градиентом и тонкая светлая рамка.
+///
+/// В экономном режиме ([VisualEffects]) размытие не рисуется: остаётся та же
+/// заливка, чуть плотнее, чтобы текст читался поверх фотографии без матовой
+/// подложки. Это главная правка ради Android — карточек на экране до шести, а
+/// в чтении Корана по одной на каждый аят, и каждая просила движок отдельно
+/// размыть то, что под ней, заново на каждом кадре прокрутки.
 class GlassCard extends StatelessWidget {
   final Widget child;
   final double radius;
@@ -35,32 +42,57 @@ class GlassCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final card = ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(radius),
-            border: Border.all(
-                color: selected
-                    ? AppColors.selection
-                    : Colors.white.withValues(alpha: 0.16),
-                width: selected ? 1.4 : 1),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.10),
-                Colors.black.withValues(alpha: darkness + 0.14),
-              ],
-            ),
-            color: Colors.black.withValues(alpha: darkness),
-          ),
-          child: child,
+    return ListenableBuilder(
+      listenable: VisualEffects.instance,
+      builder: (context, _) => _build(VisualEffects.instance.blur),
+    );
+  }
+
+  Widget _build(bool blurred) {
+    // Без размытия фотография просвечивает резко, и текст на ней теряется —
+    // добираем плотностью подложки. Величина подобрана по снимку экрана: на
+    // обоях по умолчанию под карточкой времён намаза оказывается подсвеченный
+    // циферблат башни, и цифры читались поверх ярко-зелёного.
+    //
+    // Красить приходится именно градиентом: в `BoxDecoration` он перекрывает
+    // `color` целиком (шейдер вытесняет цвет в `Paint`), поэтому заливка тут
+    // всегда была декоративной и ни на что не влияла. В полном режиме
+    // градиент идёт от белого блика — на размытом фоне это и читается как
+    // стекло; без размытия тот же блик высветляет карточку, и его убираем.
+    final fill = blurred ? darkness : (darkness + 0.38).clamp(0.0, 1.0);
+    final inner = Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(
+            color: selected
+                ? AppColors.selection
+                : Colors.white.withValues(alpha: 0.16),
+            width: selected ? 1.4 : 1),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: blurred
+              ? [
+                  Colors.white.withValues(alpha: 0.10),
+                  Colors.black.withValues(alpha: darkness + 0.14),
+                ]
+              : [
+                  Colors.black.withValues(alpha: fill),
+                  Colors.black.withValues(alpha: (fill + 0.12).clamp(0.0, 1.0)),
+                ],
         ),
       ),
+      child: child,
+    );
+    final card = ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: blurred
+          ? BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+              child: inner,
+            )
+          : inner,
     );
     if (!elevated) return card;
     return DecoratedBox(
@@ -75,6 +107,84 @@ class GlassCard extends StatelessWidget {
         ],
       ),
       child: card,
+    );
+  }
+}
+
+/// Размытие фона там, где оно включено, и ничего — где выключено.
+///
+/// Ставится ровно на место `BackdropFilter`: обёртка одноуровневая, поэтому
+/// листы, собиравшие стекло вручную, переводятся заменой одной строки.
+class MaybeBlur extends StatelessWidget {
+  final Widget child;
+  final double sigma;
+  const MaybeBlur({super.key, required this.child, this.sigma = 24});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: VisualEffects.instance,
+      builder: (context, _) => VisualEffects.instance.blur
+          ? BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+              child: child,
+            )
+          : child,
+    );
+  }
+}
+
+/// Плотность подложки листа. Без размытия за ней остаётся резкая фотография:
+/// на снимке экрана сквозь меню «···» читались и карточка времён намаза, и
+/// нижняя панель. Лист в экономном режиме — почти сплошная панель.
+double sheetAlpha(double full) =>
+    VisualEffects.instance.blur ? full : (full + 0.20).clamp(0.0, 1.0);
+
+/// Подложка модального листа — то же стекло, что у карточек, но во всю
+/// ширину и со скруглением только сверху. Раньше каждый лист собирал эту
+/// конструкцию сам, и переключить их разом было негде.
+class GlassSheet extends StatelessWidget {
+  final Widget child;
+
+  /// Насколько плотна подложка в полном режиме. В экономном к ней добавляется
+  /// непрозрачности: за листом остаётся резкая фотография.
+  final double opacity;
+  final double radius;
+  final double blur;
+
+  /// Обернуть подложку в [Material] — нужно листам, внутри которых есть
+  /// нажимаемые строки: без него у них негде рисовать отклик.
+  final bool material;
+
+  const GlassSheet({
+    super.key,
+    required this.child,
+    this.opacity = 0.9,
+    this.radius = 24,
+    this.blur = 24,
+    this.material = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: VisualEffects.instance,
+      builder: (context, _) {
+        final blurred = VisualEffects.instance.blur;
+        final color = AppColors.skyBottom.withValues(alpha: sheetAlpha(opacity));
+        final Widget inner = material
+            ? Material(color: color, child: child)
+            : ColoredBox(color: color, child: child);
+        return ClipRRect(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(radius)),
+          child: blurred
+              ? BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+                  child: inner,
+                )
+              : inner,
+        );
+      },
     );
   }
 }
@@ -205,37 +315,46 @@ class FadeSlideIn extends StatefulWidget {
 
 class _FadeSlideInState extends State<FadeSlideIn>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.duration);
-  late final Animation<double> _a =
-      CurvedAnimation(parent: _c, curve: Curves.easeOutCubic);
+  /// Каскад появления блоков — самое заметное место открытия экрана: на
+  /// главной их с полдюжины, и каждый добавляет слой прозрачности и сдвиг
+  /// поверх остальной отрисовки. В экономном режиме блок просто появляется.
+  late final bool _animate = VisualEffects.instance.animated;
+
+  AnimationController? _c;
+  Animation<double>? _a;
 
   @override
   void initState() {
     super.initState();
+    if (!_animate) return;
+    final c = AnimationController(vsync: this, duration: widget.duration);
+    _c = c;
+    _a = CurvedAnimation(parent: c, curve: Curves.easeOutCubic);
     if (widget.delay == Duration.zero) {
-      _c.forward();
+      c.forward();
     } else {
       Future.delayed(widget.delay, () {
-        if (mounted) _c.forward();
+        if (mounted) c.forward();
       });
     }
   }
 
   @override
   void dispose() {
-    _c.dispose();
+    _c?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final a = _a;
+    if (a == null) return widget.child;
     return AnimatedBuilder(
-      animation: _a,
+      animation: a,
       builder: (context, child) => Opacity(
-        opacity: _a.value,
+        opacity: a.value,
         child: Transform.translate(
-          offset: widget.offset * (1 - _a.value),
+          offset: widget.offset * (1 - a.value),
           child: child,
         ),
       ),
@@ -287,22 +406,32 @@ class PulsingDot extends StatefulWidget {
 
 class _PulsingDotState extends State<PulsingDot>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 900))
-    ..repeat(reverse: true);
+  /// Точка пульсирует бесконечно, то есть держит экран перерисовывающимся всё
+  /// время, пока видна. В экономном режиме она просто горит.
+  late final AnimationController? _c = VisualEffects.instance.animated
+      ? (AnimationController(
+          vsync: this, duration: const Duration(milliseconds: 900))
+        ..repeat(reverse: true))
+      : null;
 
   @override
   void dispose() {
-    _c.dispose();
+    _c?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final c = _c;
+    if (c == null) return _dot;
     return FadeTransition(
-      opacity: Tween(begin: 0.35, end: 1.0).animate(
-          CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
-      child: Container(
+      opacity: Tween(begin: 0.35, end: 1.0)
+          .animate(CurvedAnimation(parent: c, curve: Curves.easeInOut)),
+      child: _dot,
+    );
+  }
+
+  Widget get _dot => Container(
         width: widget.size,
         height: widget.size,
         decoration: BoxDecoration(
@@ -313,7 +442,5 @@ class _PulsingDotState extends State<PulsingDot>
                 color: widget.color.withValues(alpha: 0.6), blurRadius: 8),
           ],
         ),
-      ),
-    );
-  }
+      );
 }

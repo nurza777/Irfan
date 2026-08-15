@@ -1,4 +1,3 @@
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -6,6 +5,7 @@ import '../app_state.dart';
 import '../services/zikr_service.dart';
 import '../services/lang.dart';
 import '../theme.dart';
+import '../widgets/glass.dart';
 import 'private_zikr_section.dart';
 
 /// Настройки зикров: какие зикры и сколько раз в день. Изменения
@@ -88,10 +88,9 @@ class _ZikrSettingsSheetState extends State<_ZikrSettingsSheet> {
 
     return ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+      child: MaybeBlur(
         child: Container(
-          color: AppColors.skyBottom.withValues(alpha: 0.88),
+          color: AppColors.skyBottom.withValues(alpha: sheetAlpha(0.88)),
           padding: EdgeInsets.only(
               bottom: MediaQuery.of(context).viewInsets.bottom),
           child: SafeArea(

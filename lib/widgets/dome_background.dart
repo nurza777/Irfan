@@ -3,12 +3,18 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../services/visual_effects.dart';
 import '../services/wallpaper_service.dart';
 import '../theme.dart';
 
 /// Фон приложения: фотография Каабы и часовой башни Мекки с медленным
 /// «кен-бёрнс» приближением, затемнением для читаемости и парящими
 /// золотыми частицами.
+///
+/// В экономном режиме ([VisualEffects]) фото стоит неподвижно и частиц нет:
+/// фон рисуется на каждом экране приложения, и вечная анимация означает
+/// перерисовку всего экрана 60 раз в секунду даже тогда, когда человек просто
+/// читает.
 class DomeBackground extends StatefulWidget {
   final Widget child;
   const DomeBackground({super.key, required this.child});
@@ -19,61 +25,97 @@ class DomeBackground extends StatefulWidget {
 
 class _DomeBackgroundState extends State<DomeBackground>
     with TickerProviderStateMixin {
-  late final AnimationController _zoom = AnimationController(
-      vsync: this, duration: const Duration(seconds: 22))
-    ..repeat(reverse: true);
-  late final AnimationController _drift = AnimationController(
-      vsync: this, duration: const Duration(seconds: 14))
-    ..repeat();
+  AnimationController? _zoom;
+  AnimationController? _drift;
+
+  @override
+  void initState() {
+    super.initState();
+    VisualEffects.instance.addListener(_onEffectsChanged);
+    _syncControllers();
+  }
+
+  void _onEffectsChanged() {
+    if (!mounted) return;
+    setState(_syncControllers);
+  }
+
+  /// Контроллеры заводятся только в полном режиме — остановленный, но живой
+  /// тикер всё равно держал бы `AnimatedBuilder` в дереве.
+  void _syncControllers() {
+    if (VisualEffects.instance.animated) {
+      _zoom ??= AnimationController(
+          vsync: this, duration: const Duration(seconds: 22))
+        ..repeat(reverse: true);
+      _drift ??=
+          AnimationController(vsync: this, duration: const Duration(seconds: 14))
+            ..repeat();
+    } else {
+      _zoom?.dispose();
+      _drift?.dispose();
+      _zoom = null;
+      _drift = null;
+    }
+  }
 
   @override
   void dispose() {
-    _zoom.dispose();
-    _drift.dispose();
+    VisualEffects.instance.removeListener(_onEffectsChanged);
+    _zoom?.dispose();
+    _drift?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Растр обоев не зависит от кадра анимации: под RepaintBoundary движок
+    // рисует фотографию один раз и дальше только двигает готовый слой.
+    final photo = RepaintBoundary(
+      child: ListenableBuilder(
+        listenable: WallpaperService.instance,
+        builder: (context, _) {
+          final custom = WallpaperService.instance.path;
+          if (custom != null) {
+            return Image.file(
+              File(custom),
+              key: ValueKey(custom),
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => Image.asset(
+                  'assets/images/wallpaper.jpg',
+                  fit: BoxFit.cover),
+            );
+          }
+          return Image.asset(
+            'assets/images/wallpaper.jpg',
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) =>
+                const ColoredBox(color: AppColors.skyBottom),
+          );
+        },
+      ),
+    );
+
+    final zoom = _zoom;
+    final drift = _drift;
+
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Фото с медленным приближением/отдалением.
-        AnimatedBuilder(
-          animation: _zoom,
-          builder: (context, child) {
-            final t =
-                Curves.easeInOut.transform(_zoom.value);
-            return Transform.scale(
-              scale: 1.04 + 0.07 * t,
-              alignment: Alignment.topCenter,
-              child: child,
-            );
-          },
-          // Свои обои, если выбраны; иначе встроенное фото Каабы.
-          child: ListenableBuilder(
-            listenable: WallpaperService.instance,
-            builder: (context, _) {
-              final custom = WallpaperService.instance.path;
-              if (custom != null) {
-                return Image.file(
-                  File(custom),
-                  key: ValueKey(custom),
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => Image.asset(
-                      'assets/images/wallpaper.jpg',
-                      fit: BoxFit.cover),
-                );
-              }
-              return Image.asset(
-                'assets/images/wallpaper.jpg',
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) =>
-                    const ColoredBox(color: AppColors.skyBottom),
+        if (zoom == null)
+          photo
+        else
+          AnimatedBuilder(
+            animation: zoom,
+            builder: (context, child) {
+              final t = Curves.easeInOut.transform(zoom.value);
+              return Transform.scale(
+                scale: 1.04 + 0.07 * t,
+                alignment: Alignment.topCenter,
+                child: child,
               );
             },
+            child: photo,
           ),
-        ),
         // Затемнение сверху (статус-бар) и снизу (контент).
         const DecoratedBox(
           decoration: BoxDecoration(
@@ -90,53 +132,71 @@ class _DomeBackgroundState extends State<DomeBackground>
             ),
           ),
         ),
-        // Парящие золотые частицы.
-        IgnorePointer(
-          child: AnimatedBuilder(
-            animation: _drift,
-            builder: (context, _) => CustomPaint(
-              painter: _ParticlesPainter(_drift.value),
+        // Парящие золотые частицы. Под RepaintBoundary: без неё их кадр
+        // объявлял грязной всю область стопки, вместе с фотографией.
+        if (drift != null)
+          IgnorePointer(
+            child: RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: drift,
+                builder: (context, _) => CustomPaint(
+                  painter: _ParticlesPainter(drift.value),
+                ),
+              ),
             ),
           ),
-        ),
         widget.child,
       ],
     );
   }
 }
 
+/// Частица: положение и характер заданы раз и навсегда. Раньше они
+/// вычислялись заново на каждом кадре — вместе с новым `Random` и новым
+/// `Paint` на каждый кружок, то есть под тысячу лишних объектов в секунду.
+class _Particle {
+  final double x;
+  final double y;
+  final double speed;
+  final double phase;
+  final double radius;
+  const _Particle(this.x, this.y, this.speed, this.phase, this.radius);
+}
+
+final List<_Particle> _particles = () {
+  final rnd = math.Random(7);
+  return List<_Particle>.generate(16, (_) {
+    final x = rnd.nextDouble();
+    final y = rnd.nextDouble();
+    final speed = 0.35 + rnd.nextDouble() * 0.65;
+    final phase = rnd.nextDouble();
+    final radius = 1.2 + rnd.nextDouble() * 2.2;
+    return _Particle(x, y, speed, phase, radius);
+  });
+}();
+
 class _ParticlesPainter extends CustomPainter {
   final double t;
   _ParticlesPainter(this.t);
 
-  static const _count = 16;
-
   @override
   void paint(Canvas canvas, Size size) {
-    final rnd = math.Random(7);
-    for (int i = 0; i < _count; i++) {
-      final baseX = rnd.nextDouble();
-      final baseY = rnd.nextDouble();
-      final speed = 0.35 + rnd.nextDouble() * 0.65;
-      final phase = rnd.nextDouble();
-      final r = 1.2 + rnd.nextDouble() * 2.2;
-
-      final y = ((baseY - t * speed) % 1.0 + 1.0) % 1.0;
-      final sway = math.sin((t + phase) * 2 * math.pi) * 12;
+    // Один Paint на все кружки: цвет у него меняется, объект — нет.
+    // Размытие маской убрано: на кружке в пару точек его почти не видно, а
+    // стоит оно дороже самой отрисовки.
+    final paint = Paint();
+    for (final p in _particles) {
+      final y = ((p.y - t * p.speed) % 1.0 + 1.0) % 1.0;
+      final sway = math.sin((t + p.phase) * 2 * math.pi) * 12;
       // Мерцание + гашение у краёв экрана.
-      final twinkle =
-          0.5 + 0.5 * math.sin((t * 3 + phase) * 2 * math.pi);
-      final edgeFade =
-          (1 - (2 * y - 1).abs()).clamp(0.0, 1.0);
-      final alpha = 0.10 + 0.25 * twinkle * edgeFade;
-
+      final twinkle = 0.5 + 0.5 * math.sin((t * 3 + p.phase) * 2 * math.pi);
+      final edgeFade = (1 - (2 * y - 1).abs()).clamp(0.0, 1.0);
+      paint.color = AppColors.goldLight
+          .withValues(alpha: 0.10 + 0.25 * twinkle * edgeFade);
       canvas.drawCircle(
-        Offset(baseX * size.width + sway, y * size.height),
-        r,
-        Paint()
-          ..color = AppColors.goldLight.withValues(alpha: alpha)
-          ..maskFilter =
-              const MaskFilter.blur(BlurStyle.normal, 1.5),
+        Offset(p.x * size.width + sway, y * size.height),
+        p.radius,
+        paint,
       );
     }
   }
