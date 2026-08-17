@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/access_service.dart';
+import 'services/certificate_service.dart';
 import 'services/account_backup.dart';
 import 'services/account_deletion.dart';
 import 'services/auth_service.dart';
@@ -103,6 +104,7 @@ class AppState extends ChangeNotifier {
     // Запускаем, но не ждём: см. HomeWidgetService.init.
     unawaited(HomeWidgetService.init());
     await WallpaperService.instance.init();
+    await CertificateService.instance.init();
     await WatchProgress.instance.init();
     _applyLocationSetting();
     _recompute();
@@ -341,6 +343,7 @@ class AppState extends ChangeNotifier {
       if (blocked == true) {
         await auth!.logout();
         AccessService.instance.clear();
+        CertificateService.instance.clear();
         notifyListeners();
         return t('Аккаунт заблокирован администратором');
       }
@@ -399,6 +402,7 @@ class AppState extends ChangeNotifier {
     // Иначе следующий ученик на этом же устройстве увидел бы курсы,
     // открытые предыдущему, — пока сервер не ответит по нему самому.
     AccessService.instance.clear();
+    CertificateService.instance.clear();
     notifyListeners();
   }
 
@@ -408,6 +412,7 @@ class AppState extends ChangeNotifier {
     final err = await AccountDeletion.deleteCurrent(auth!);
     if (err != null) return err;
     AccessService.instance.clear();
+    CertificateService.instance.clear();
     // Пересоздаём сервисы: коины, стрики и счётчики зикров считаются из
     // истории, а она только что стёрта — иначе на экране остались бы
     // цифры удалённого аккаунта до перезапуска приложения.

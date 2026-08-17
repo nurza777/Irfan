@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'access_service.dart';
+import 'certificate_service.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
 import 'device_key.dart';
@@ -54,6 +55,8 @@ class UserRegistry {
       final j = jsonDecode(utf8.decode(r.bodyBytes)) as Map<String, dynamic>;
       // Сервер возвращает и выданные доступы к курсам — сразу их применяем.
       AccessService.instance.update(j['access'] as List?);
+      // Тем же ответом приходят дипломы и сертификаты.
+      await CertificateService.instance.update(j['certificates'] as List?);
       return j['blocked'] == true;
     } catch (e) {
       debugPrint('user registry report error: $e');

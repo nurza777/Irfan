@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../services/auth_service.dart';
+import '../services/certificate_service.dart';
 import '../services/lang.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 import 'restore_account_screen.dart';
 import 'settings_screen.dart';
+import 'certificates_screen.dart';
 import 'shop_screen.dart';
 import 'verify_phone_screen.dart';
 import 'zikr_settings_sheet.dart';
@@ -594,6 +596,11 @@ class _Profile extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
+        const FadeSlideIn(
+          delay: Duration(milliseconds: 90),
+          child: _CertificatesEntry(),
+        ),
+        const SizedBox(height: 14),
         _section('Намазы · 30 дней', 100, [
           _statRow(Icons.check_circle_outline, 'Прочитано', '$read',
               AppColors.accentGreen),
@@ -997,6 +1004,63 @@ class _Profile extends StatelessWidget {
           : Icon(Icons.chevron_right,
               color: Colors.white.withValues(alpha: 0.4)),
       onTap: onTap,
+    );
+  }
+}
+
+/// Вход в раздел документов из личного кабинета.
+///
+/// Скрыт, пока ничего не выдано: пустая карточка «сертификатов нет» на
+/// главном экране аккаунта выглядела бы упрёком, а не разделом.
+class _CertificatesEntry extends StatelessWidget {
+  const _CertificatesEntry();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: CertificateService.instance,
+      builder: (context, _) {
+        final items = CertificateService.instance.items;
+        if (items.isEmpty) return const SizedBox.shrink();
+        final unseen = CertificateService.instance.unseen;
+        return PressableScale(
+          onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const CertificatesScreen())),
+          child: GlassCard(
+            radius: 20,
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                const Icon(Icons.workspace_premium_outlined,
+                    color: AppColors.goldLight, size: 30),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(t('Мои сертификаты'),
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w700)),
+                      Text(
+                        unseen > 0
+                            ? '${items.length} · ${t('новых')}: $unseen'
+                            : '${items.length}',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.white.withValues(alpha: 0.7)),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right,
+                    color: Colors.white.withValues(alpha: 0.6)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

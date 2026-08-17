@@ -9,6 +9,7 @@ import '../app_state.dart';
 import '../services/account_backup.dart';
 import '../services/api_config.dart';
 import '../services/asmaul_husna.dart';
+import '../services/certificate_service.dart';
 import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
@@ -23,6 +24,7 @@ import 'names_screen.dart';
 import 'news_screen.dart';
 import 'account_screen.dart';
 import 'azkar_screen.dart';
+import 'certificates_screen.dart';
 import 'courses_page.dart';
 import '../services/staff_auth.dart';
 import 'staff/staff_home.dart';
@@ -112,6 +114,24 @@ class _RootScreenState extends State<RootScreen> {
           qs.setMode(ReadingMode.page);
           qs.setTranslation(translationById('azan'));
           qs.setReciter(reciterById('alafasy'));
+        } else if (screen == 'certs') {
+          // `certs` — список, `certs:<номер по порядку>` — сразу бланк во весь
+          // экран: тапнуть по карточке в симуляторе нечем.
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const CertificatesScreen()));
+          final i = int.tryParse(reciterArg ?? '');
+          final list = CertificateService.instance.items;
+          if (i != null && i >= 0 && i < list.length) {
+            final female =
+                AppScope.of(context).auth?.current?.gender.name == 'female';
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => CertificateViewer(
+                        cert: list[i],
+                        female: female,
+                        autoShare: parts.length > 2 && parts[2] == 'share')));
+          }
         } else if (screen == 'effects') {
           // `effects:full|light` — уровень оформления. По умолчанию он разный
           // на разных платформах, а сравнивать оба вида надо на одном экране.

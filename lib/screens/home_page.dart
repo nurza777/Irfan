@@ -7,6 +7,7 @@ import '../app_state.dart';
 import '../services/lang.dart';
 import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
+import '../services/certificate_service.dart';
 import '../services/tracker_service.dart';
 import '../services/visual_effects.dart';
 import '../theme.dart';
@@ -15,6 +16,7 @@ import '../widgets/glass.dart';
 import '../widgets/prayer_times_card.dart';
 import 'account_screen.dart';
 import 'azkar_screen.dart';
+import 'certificates_screen.dart';
 import 'courses_page.dart';
 import 'live_screen.dart';
 import 'names_screen.dart';
@@ -220,7 +222,13 @@ class _MenuTile extends StatelessWidget {
     required this.open,
     this.iconColor,
     this.free = false,
+    this.badge = 0,
   });
+
+  /// Сколько новых внутри. Пушей у нас нет: точка в меню — единственный
+  /// способ сообщить, что документ выдан, не дожидаясь, пока человек сам
+  /// заглянет в раздел.
+  final int badge;
 
   @override
   Widget build(BuildContext context) {
@@ -237,7 +245,21 @@ class _MenuTile extends StatelessWidget {
       trailing: locked
           ? Icon(Icons.lock_outline,
               size: 18, color: Colors.white.withValues(alpha: 0.5))
-          : null,
+          : (badge > 0
+              ? Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.gold,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('$badge',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.black)),
+                )
+              : null),
       onTap: () {
         final navigatorContext = context;
         Navigator.pop(sheet);
@@ -527,6 +549,16 @@ void showMoreSheet(
                     sheet: ctx,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const CoursesPage())),
+                  ),
+                  _MenuTile(
+                    icon: Icons.workspace_premium_outlined,
+                    title: 'Мои сертификаты',
+                    subtitle: 'Дипломы за пройденные модули',
+                    sheet: ctx,
+                    badge: CertificateService.instance.unseen,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(
+                            builder: (_) => const CertificatesScreen())),
                   ),
                   _MenuTile(
                     icon: Icons.auto_awesome,
