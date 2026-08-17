@@ -291,11 +291,18 @@ const state = {
   coursesRaw: {},
   teacherId: '',
   pendingCourses: [],
+  // Выданные дипломы и сертификаты плюс настраиваемый список поводов
+  // (модулей и программ) — их правит админ здесь же.
+  certs: [],
+  certModules: [],
+  // Кого отметили галочками для выдачи. Живёт отдельно от разметки: поиск
+  // прячет строки, а не перерисовывает список, иначе отметки слетали бы.
+  certPick: new Set(),
 };
 
 async function loadAll() {
   const [users, access, codes, courses, media, teachers, queue, pn, pa, staff,
-         crashes, support] =
+         crashes, support, certs, certModules] =
     await Promise.all([
       getJson('/users.json', []),
       getJson('/access.json', []),
@@ -309,8 +316,14 @@ async function loadAll() {
       getJson('/staff.json', { staff: [] }),
       getJson('/crashes.json', []),
       getJson('/support.json', {}),
+      getJson('/certificates.json', { items: [] }),
+      getJson('/cert_modules.json', { items: [] }),
     ]);
   state.support = (support && typeof support === 'object') ? support : {};
+  // Свежие сверху: последняя выдача — та, к которой чаще возвращаются.
+  state.certs = (Array.isArray(certs?.items) ? certs.items : [])
+    .slice().sort((a, b) => (b.issuedAt || 0) - (a.issuedAt || 0));
+  state.certModules = Array.isArray(certModules?.items) ? certModules.items : [];
   state.teachers = teachers?.teachers || [];
   state.staff = staff?.staff || [];
   // Свежие сверху: чинить надо то, что падает сейчас.
@@ -389,6 +402,7 @@ const TABS = [
   ['courses', 'Курсы', viewCourses],
   ['media', 'Видео', viewMedia],
   ['access', 'Доступы', viewAccess],
+  ['certs', 'Сертификаты', viewCerts],
   ['codes', 'Коды', viewCodes],
   ['moderation', 'Модерация', viewModeration],
   ['crashes', 'Сбои', viewCrashes],
@@ -683,6 +697,369 @@ function viewAccess() {
         <td><button class="danger" data-rv="${esc(g.student ?? g.email)}|${esc(g.scope)}|${esc(g.key)}">Закрыть</button></td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
+}
+
+// — Сертификаты и дипломы
+//
+// Выдаёт только админ и только руками: прогресс уроков живёт на телефоне
+// ученика, а «досмотрел ролик» и «сдал модуль» — разные вещи. Поводы
+// (модули, программы) настраиваются здесь же, внизу раздела: модулей может
+// стать пять, а программ три, и ради этого не нужно трогать код.
+
+const CERT_TEMPLATES = [
+  ['diploma', 'Диплом'],
+  ['certificate', 'Сертификат'],
+  ['gift', 'Подарочный'],
+];
+const CERT_LANGS = [['ru', 'Русский'], ['ky', 'Кыргызча']];
+
+const certTplName = (t) =>
+  (CERT_TEMPLATES.find(([id]) => id === t) || [null, t || '—'])[1];
+
+/// Обращение на бланке: в русских образцах оно зависит от пола, в
+/// кыргызских — одно на всех («УРМАТТУУ»).
+const certSalute = (gender, lang) => lang === 'ky'
+  ? 'УРМАТТУУ'
+  : (gender === 'female' ? 'УВАЖАЕМАЯ' : 'УВАЖАЕМЫЙ');
+
+/// Уже выданное этому ученику — чтобы при выдаче было видно, кому повторять
+/// не нужно.
+const certsOf = (id) =>
+  state.certs.filter((c) => c.student === id && c.status === 'issued');
+
+function viewCerts() {
+  const mods = state.certModules;
+  const today = new Date().toISOString().slice(0, 10);
+  const teacher = state.author || '';
+
+  const issue = `<div class="card">
+    <h2>Выдать</h2>
+    <div class="grid" style="gap:10px">
+      <label>Повод<br><select id="c-mod">
+        <option value="">— свой текст —</option>
+        ${mods.map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}
+      </select></label>
+      <label>Бланк<br><select id="c-tpl">
+        ${CERT_TEMPLATES.map(([id, t]) =>
+          `<option value="${id}">${t}</option>`).join('')}
+      </select></label>
+      <label>Язык<br><select id="c-lang">
+        ${CERT_LANGS.map(([id, t]) =>
+          `<option value="${id}">${t}</option>`).join('')}
+      </select></label>
+      <label>Дата<br><input type="date" id="c-date" value="${today}"></label>
+    </div>
+    <label>Текст повода (встанет на бланк)<br>
+      <input id="c-title" style="width:100%" placeholder="первого модуля по чтению Корана"></label>
+    <div class="grid" style="gap:10px;margin-top:8px">
+      <label>Курс (для учёта, на бланк не идёт)<br>
+        <input id="c-course" placeholder="Таджвид/Основы чтения"></label>
+      <label>Устаз<br><input id="c-teacher" value="${esc(teacher)}"></label>
+      <label id="c-gift-wrap" style="display:none">Подарок от<br>
+        <input id="c-gift" placeholder="Жунусов Нурсултандан"></label>
+    </div>
+    <p class="muted" id="c-preview" style="margin:10px 0 0"></p>
+
+    <div class="bar" style="margin-top:14px">
+      <input id="c-q" placeholder="Поиск ученика" style="flex:1">
+      <button id="c-all">Отметить видимых</button>
+      <button id="c-none">Снять отметки</button>
+    </div>
+    <table><thead><tr><th></th><th>Имя на бланке</th><th>Телефон</th>
+      <th>Уже выдано</th></tr></thead>
+      <tbody id="c-list">${certStudentRows('')}</tbody></table>
+    <button id="c-issue" style="margin-top:12px">Выдать отмеченным (0)</button>
+  </div>`;
+
+  const registry = `<div class="card">
+    <h2>Выданные (${state.certs.length})</h2>
+    ${state.certs.length ? `
+    <input id="c-rq" placeholder="Поиск по номеру, имени или поводу"
+           style="width:100%;margin-bottom:10px">
+    <table><thead><tr><th>Номер</th><th>Кому</th><th>Что</th><th>Дата</th>
+      <th>Статус</th><th></th></tr></thead>
+      <tbody id="c-reg">${certRegistryRows('')}</tbody></table>`
+    : '<p class="muted">Пока ничего не выдано.</p>'}
+  </div>`;
+
+  const modules = `<div class="card">
+    <h2>Модули и программы</h2>
+    <p class="muted">Из этого списка выбирается повод при выдаче. Текст
+      подставляется в бланк на выбранном языке; если кыргызского нет, встанет
+      русский. Правка списка не меняет уже выданные документы.</p>
+    <table><thead><tr><th>Название (для панели)</th><th>Бланк</th>
+      <th>Текст по-русски</th><th>Текст по-кыргызски</th><th></th></tr></thead>
+      <tbody id="c-mods">${(mods.length ? mods : [{}]).map(certModuleRow).join('')}</tbody></table>
+    <div class="bar" style="margin-top:10px">
+      <button id="c-mod-add">Добавить строку</button>
+      <button id="c-mod-save">Сохранить список</button>
+    </div>
+  </div>`;
+
+  return issue + registry + modules;
+}
+
+/// Строка ученика в списке выдачи. Имя — поле ввода: ученик писал его сам
+/// при регистрации, бывает строчными и с опечаткой, а на бланке оно должно
+/// стоять так, как решил админ.
+function certStudentRows(q) {
+  const needle = (q || '').trim().toLowerCase();
+  return state.users
+    .filter((u) => !u.blocked)
+    .map((u) => {
+      const id = identOf(u);
+      const has = certsOf(id);
+      const hay = `${u.name || ''} ${id} ${u.city || ''}`.toLowerCase();
+      const hide = needle && !hay.includes(needle);
+      return `<tr class="c-row" data-id="${esc(id)}"${hide ? ' style="display:none"' : ''}>
+        <td><input type="checkbox" class="c-pick" data-id="${esc(id)}"
+             ${state.certPick.has(id) ? 'checked' : ''}></td>
+        <td><input class="c-name" data-id="${esc(id)}" value="${esc(u.name || '')}"
+             style="width:100%"></td>
+        <td class="muted">${esc(id)}</td>
+        <td>${has.length
+          ? has.map((c) => `<span class="tag">${esc(certTplName(c.template))}</span>`).join(' ')
+          : '<span class="muted">—</span>'}</td>
+      </tr>`;
+    }).join('');
+}
+
+function certRegistryRows(q) {
+  const needle = (q || '').trim().toLowerCase();
+  return state.certs.map((c) => {
+    const hay = `${c.number} ${c.name} ${c.title} ${c.course || ''}`.toLowerCase();
+    const hide = needle && !hay.includes(needle);
+    const revoked = c.status === 'revoked';
+    return `<tr${hide ? ' style="display:none"' : ''}>
+      <td><code>${esc(c.number)}</code></td>
+      <td>${esc(c.name)}<br><span class="muted">${esc(c.student || '')}</span></td>
+      <td>${esc(certTplName(c.template))} · ${esc(c.lang === 'ky' ? 'кы' : 'ру')}<br>
+          <span class="muted">${esc(c.title)}</span></td>
+      <td class="muted">${fmtDate(c.issuedAt)}</td>
+      <td>${revoked ? '<span class="tag bad">отозван</span>'
+                    : '<span class="tag ok">действует</span>'}</td>
+      <td class="row-actions">
+        <button data-cedit="${esc(c.number)}">Править</button>
+        <button data-crev="${esc(c.number)}">${revoked ? 'Вернуть' : 'Отозвать'}</button>
+        <button class="danger" data-cdel="${esc(c.number)}">Удалить</button>
+      </td></tr>`;
+  }).join('');
+}
+
+function certModuleRow(m) {
+  return `<tr class="c-mod-row">
+    <td><input class="cm-label" value="${esc(m.label || '')}" placeholder="Модуль 1"></td>
+    <td><select class="cm-tpl">${CERT_TEMPLATES.map(([id, t]) =>
+      `<option value="${id}"${(m.template || 'diploma') === id ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
+    <td><input class="cm-ru" value="${esc(m.ru || '')}" style="width:100%"
+        placeholder="первого модуля по чтению Корана"></td>
+    <td><input class="cm-ky" value="${esc(m.ky || '')}" style="width:100%"
+        placeholder="Куран окуу боюнча биринчи модулду"></td>
+    <td><button class="danger cm-del">×</button></td>
+  </tr>`;
+}
+
+function wireCerts() {
+  if (!$('#c-issue')) return;
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+  const preview = () => {
+    const tpl = $('#c-tpl').value;
+    const lang = $('#c-lang').value;
+    const title = $('#c-title').value.trim();
+    $('#c-gift-wrap').style.display = tpl === 'gift' ? '' : 'none';
+    $('#c-preview').textContent = title
+      ? `${certTplName(tpl)} · ${certSalute('male', lang)}/${certSalute('female', lang)} · «${title}»`
+      : 'Выберите повод или впишите текст — он встанет на бланк.';
+  };
+
+  // Повод — главный выбор: за ним следом встают бланк и текст, чтобы не
+  // выбирать одно и то же дважды и не путать диплом с сертификатом.
+  $('#c-mod').onchange = () => {
+    const m = state.certModules.find((x) => x.id === $('#c-mod').value);
+    if (!m) { preview(); return; }
+    $('#c-tpl').value = m.template || 'diploma';
+    const lang = $('#c-lang').value;
+    $('#c-title').value = (lang === 'ky' ? (m.ky || m.ru) : m.ru) || '';
+    preview();
+  };
+  $('#c-lang').onchange = () => { $('#c-mod').onchange(); };
+  $('#c-tpl').onchange = preview;
+  $('#c-title').oninput = preview;
+  preview();
+
+  const countBtn = () => {
+    $('#c-issue').textContent = `Выдать отмеченным (${state.certPick.size})`;
+  };
+  const bindPicks = () => {
+    $$('.c-pick').forEach((el) => (el.onchange = () => {
+      if (el.checked) state.certPick.add(el.dataset.id);
+      else state.certPick.delete(el.dataset.id);
+      countBtn();
+    }));
+  };
+  bindPicks();
+  countBtn();
+
+  // Поиск прячет строки, а не перерисовывает список: иначе слетали бы
+  // отметки и вписанные имена.
+  $('#c-q').oninput = () => {
+    const needle = $('#c-q').value.trim().toLowerCase();
+    $$('#c-list tr.c-row').forEach((tr) => {
+      const name = tr.querySelector('.c-name')?.value || '';
+      const hay = `${name} ${tr.dataset.id}`.toLowerCase();
+      tr.style.display = (!needle || hay.includes(needle)) ? '' : 'none';
+    });
+  };
+  $('#c-all').onclick = () => {
+    $$('#c-list tr.c-row').forEach((tr) => {
+      if (tr.style.display === 'none') return;
+      const box = tr.querySelector('.c-pick');
+      box.checked = true;
+      state.certPick.add(box.dataset.id);
+    });
+    countBtn();
+  };
+  $('#c-none').onclick = () => {
+    state.certPick.clear();
+    $$('.c-pick').forEach((b) => (b.checked = false));
+    countBtn();
+  };
+
+  $('#c-issue').onclick = async () => {
+    if (!state.certPick.size) { toast('Никто не отмечен'); return; }
+    const title = $('#c-title').value.trim();
+    if (!title) { toast('Впишите текст повода'); return; }
+    const names = {};
+    $$('.c-name').forEach((el) => (names[el.dataset.id] = el.value.trim()));
+    const students = Array.from(state.certPick)
+      .map((id) => ({ phone: id, name: names[id] || '' }));
+    const date = $('#c-date').value;
+    const r = await api('/certificates/issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        template: $('#c-tpl').value,
+        lang: $('#c-lang').value,
+        moduleId: $('#c-mod').value,
+        title,
+        course: $('#c-course').value.trim(),
+        teacher: $('#c-teacher').value.trim(),
+        giftFrom: $('#c-gift') ? $('#c-gift').value.trim() : '',
+        issuedAt: date ? Date.parse(date + 'T12:00:00') : 0,
+        students,
+      }),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) { toast(body?.error || `Сервер ответил ${r.status}`); return; }
+    const done = body.issued.length;
+    const skipped = body.skipped.length;
+    // Пропущенных называем поимённо: чаще всего это «уже выдан такой же»,
+    // и молчаливое «выдано 18 из 20» оставляло бы гадать, кому не досталось.
+    toast(`Выдано: ${done}${skipped ? `, пропущено: ${skipped}` : ''}`);
+    state.certPick.clear();
+    await loadAll();
+    render();
+  };
+
+  // — Реестр
+  const rq = $('#c-rq');
+  if (rq) rq.oninput = () => {
+    const needle = rq.value.trim().toLowerCase();
+    $$('#c-reg tr').forEach((tr) => {
+      tr.style.display = tr.textContent.toLowerCase().includes(needle)
+        ? '' : 'none';
+    });
+  };
+  $$('[data-cedit]').forEach((b) => (b.onclick = () =>
+    openCertEditor(b.dataset.cedit)));
+  $$('[data-crev]').forEach((b) => (b.onclick = async () => {
+    const c = state.certs.find((x) => x.number === b.dataset.crev);
+    const err = await postJson('/certificates/update', {
+      number: c.number,
+      status: c.status === 'revoked' ? 'issued' : 'revoked',
+    });
+    if (err) { toast(err); return; }
+    await loadAll();
+    render();
+  }));
+  $$('[data-cdel]').forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Удалить запись ${b.dataset.cdel}? Номер повторно не выдаётся.`)) return;
+    const err = await postJson('/certificates/delete', { number: b.dataset.cdel });
+    if (err) { toast(err); return; }
+    await loadAll();
+    render();
+  }));
+
+  // — Поводы
+  $('#c-mod-add').onclick = () => {
+    $('#c-mods').insertAdjacentHTML('beforeend', certModuleRow({}));
+    wireModuleRows();
+  };
+  $('#c-mod-save').onclick = async () => {
+    const items = Array.from(document.querySelectorAll('.c-mod-row'))
+      .map((tr, i) => ({
+        id: state.certModules[i]?.id || `m${Date.now()}${i}`,
+        label: tr.querySelector('.cm-label').value.trim(),
+        template: tr.querySelector('.cm-tpl').value,
+        ru: tr.querySelector('.cm-ru').value.trim(),
+        ky: tr.querySelector('.cm-ky').value.trim(),
+      }))
+      .filter((m) => m.label);
+    const err = await postJson('/cert/modules', { items });
+    if (err) { toast(err); return; }
+    toast('Список сохранён');
+    await loadAll();
+    render();
+  };
+  wireModuleRows();
+}
+
+function wireModuleRows() {
+  document.querySelectorAll('.cm-del').forEach((b) =>
+    (b.onclick = () => b.closest('tr').remove()));
+}
+
+/// Правка выданного. Номер и ученик не меняются: это уже другой документ, и
+/// его надо выдавать заново, чтобы в реестре осталась история.
+function openCertEditor(number) {
+  const c = state.certs.find((x) => x.number === number);
+  if (!c) return;
+  const d = dialog(`
+    <h2 style="margin:0 0 4px">${esc(c.number)}</h2>
+    <p class="muted" style="margin:0 0 14px">${esc(c.student || '')} · выдан ${fmtDate(c.issuedAt)}</p>
+    <label>Имя на бланке<br><input id="ce-name" style="width:100%" value="${esc(c.name || '')}"></label>
+    <label>Текст повода<br><input id="ce-title" style="width:100%" value="${esc(c.title || '')}"></label>
+    <div class="grid" style="gap:10px;margin-top:8px">
+      <label>Бланк<br><select id="ce-tpl">${CERT_TEMPLATES.map(([id, t]) =>
+        `<option value="${id}"${c.template === id ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Язык<br><select id="ce-lang">${CERT_LANGS.map(([id, t]) =>
+        `<option value="${id}"${c.lang === id ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+    </div>
+    <label>Курс<br><input id="ce-course" style="width:100%" value="${esc(c.course || '')}"></label>
+    <label>Устаз<br><input id="ce-teacher" style="width:100%" value="${esc(c.teacher || '')}"></label>
+    <label>Подарок от<br><input id="ce-gift" style="width:100%" value="${esc(c.giftFrom || '')}"></label>
+    <div class="bar" style="margin-top:14px">
+      <button id="ce-save">Сохранить</button>
+      <button id="ce-close">Закрыть</button>
+    </div>`);
+  $('#ce-close').onclick = () => d.close();
+  $('#ce-save').onclick = async () => {
+    const err = await postJson('/certificates/update', {
+      number: c.number,
+      name: $('#ce-name').value.trim(),
+      title: $('#ce-title').value.trim(),
+      template: $('#ce-tpl').value,
+      lang: $('#ce-lang').value,
+      course: $('#ce-course').value.trim(),
+      teacher: $('#ce-teacher').value.trim(),
+      giftFrom: $('#ce-gift').value.trim(),
+    });
+    if (err) { toast(err); return; }
+    d.close();
+    await loadAll();
+    render();
+  };
 }
 
 // — Коды подтверждения
@@ -1327,6 +1704,7 @@ async function reject(kind, who) {
 // ——— Обработчики после отрисовки ————————————————————————————————
 
 function wire() {
+  wireCerts();
   const q = $('#q');
   if (q) {
     const draw = () => {

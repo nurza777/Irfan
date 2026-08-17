@@ -104,6 +104,7 @@ suite "$TESTS/test_student_key.py" "Ключ устройства ученика
 suite "$TESTS/test_limits.py"      "Потолки размера и подделка адреса"
 suite "$TESTS/test_crashes.py"     "Приём сбоев приложения"
 suite "$TESTS/test_restore.py"     "Перенос аккаунта на другой телефон"
+suite "$TESTS/test_certificates.py" "Сертификаты и дипломы"
 # Подписанные ссылки нужно проверять при ВКЛЮЧЕННОЙ проверке — на бою она
 # пока выключена, чтобы не оборвать старые сборки на телефонах.
 suite "$TESTS/test_media_links.py" "Подписанные ссылки на уроки" '

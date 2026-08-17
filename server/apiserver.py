@@ -53,6 +53,12 @@ USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
 ACCESS = os.path.join(ROOT, 'access.json')
 TEACHERS = os.path.join(ROOT, 'teachers.json')
+# Выданные дипломы и сертификаты. Внутри имя и телефон ученика, поэтому файл
+# в списке защищённых на чтение — рядом с users.json.
+CERTIFICATES = os.path.join(ROOT, 'certificates.json')
+# Настраиваемые поводы для выдачи (модули, программы). Их правит админ в
+# панели, чтобы добавить пятый модуль или новую программу без правки кода.
+CERT_MODULES = os.path.join(ROOT, 'cert_modules.json')
 # Каталог версий — СОСЕДНИЙ с api/, а не внутри: всё, что лежит в ROOT,
 # раздаётся по HTTP, и копия users.json стала бы публичной.
 VERSIONS = os.path.join(os.path.dirname(ROOT), 'versions')
@@ -111,7 +117,8 @@ _MAX_TEACHERS = 500
 _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
                   '/verifications.json', '/media.json', '/pending.json',
                   '/staff.json', '/reports.json', '/admin.json',
-                  '/crashes.json')
+                  '/crashes.json', '/certificates.json',
+                  '/cert_modules.json')
 # Данные публикации эфира — любому вошедшему устазу, это его рабочий ключ.
 _AUTHED_GET = ('/stream.json',)
 
@@ -683,6 +690,259 @@ def _same_student(rec, ident):
     return rec.get('student') == ident or rec.get('email') == ident
 
 
+# ── Сертификаты и дипломы ────────────────────────────────────────────────
+#
+# Выдаёт только админ и только руками: прогресс просмотра уроков живёт на
+# телефоне ученика и до сервера не доходит, да и «досмотрел ролик» — не то же
+# самое, что «сдал модуль». Бланк с печатью организации — документ, и решение
+# о нём принимает человек.
+#
+# Повод («первого модуля по чтению Корана») не зашит в код: список поводов
+# лежит в cert_modules.json и правится в панели, потому что модулей может
+# стать пять, а программ — три.
+
+# Виды бланков. Совпадают с присланными образцами: диплом за модуль,
+# сертификат за программу, подарочный (даёт право начать, а не подтверждает
+# окончание).
+_CERT_TEMPLATES = ('diploma', 'certificate', 'gift')
+_CERT_LANGS = ('ru', 'ky')
+_MAX_CERTS = 20000
+
+
+def _load_certs():
+    """Хранилище: счётчик номеров отдельно от записей.
+
+    Счётчик нельзя выводить из самих записей: удалили последнюю — и следующая
+    выдача получила бы уже использованный когда-то номер. Номер печатается на
+    бланке и по нему потом проверяют подлинность, значит он не должен
+    повторяться никогда.
+    """
+    d = _read_json(CERTIFICATES, {})
+    if not isinstance(d, dict):
+        d = {}
+    items = d.get('items')
+    seq = d.get('seq')
+    return {
+        'items': items if isinstance(items, list) else [],
+        'seq': seq if isinstance(seq, dict) else {},
+    }
+
+
+def _save_certs(store):
+    store['updated'] = int(time.time() * 1000)
+    with open(CERTIFICATES, 'w', encoding='utf-8') as f:
+        json.dump(store, f, ensure_ascii=False, indent=2)
+
+
+def _cert_text(v, limit=300):
+    """Строка на бланк: без управляющих символов и без переносов."""
+    if not isinstance(v, str):
+        return ''
+    v = ''.join(ch for ch in v if ch == ' ' or ch.isprintable())
+    return ' '.join(v.split())[:limit]
+
+
+def _next_cert_number(store, year):
+    seq = store['seq']
+    n = int(seq.get(str(year)) or 0) + 1
+    seq[str(year)] = n
+    return f'IRF-{year}-{n:06d}'
+
+
+def _load_cert_modules():
+    d = _read_json(CERT_MODULES, {})
+    items = d.get('items') if isinstance(d, dict) else None
+    return items if isinstance(items, list) else []
+
+
+def _save_cert_modules(data):
+    """Список поводов целиком. Правится в панели, поэтому пишется снимком."""
+    raw = data.get('items')
+    if not isinstance(raw, list):
+        return 400, {'error': 'bad request'}
+    out = []
+    for i, e in enumerate(raw[:200]):
+        if not isinstance(e, dict):
+            continue
+        label = _cert_text(e.get('label'), 120)
+        if not label:
+            continue
+        template = e.get('template')
+        out.append({
+            'id': _cert_text(e.get('id'), 40) or f'm{i + 1}',
+            'label': label,
+            'template': template if template in _CERT_TEMPLATES else 'diploma',
+            'ru': _cert_text(e.get('ru')),
+            'ky': _cert_text(e.get('ky')),
+        })
+    with _lock:
+        with open(CERT_MODULES, 'w', encoding='utf-8') as f:
+            json.dump({'updated': int(time.time() * 1000), 'items': out},
+                      f, ensure_ascii=False, indent=2)
+    return 200, {'items': out}
+
+
+def _cert_public(rec):
+    """Что видит ученик: без телефона и без служебных полей."""
+    return {k: rec.get(k) for k in (
+        'number', 'name', 'lang', 'template', 'title', 'course', 'teacher',
+        'giftFrom', 'issuedAt')}
+
+
+def _certificates_for(ident):
+    """Действующие сертификаты ученика — то, что показывает его приложение."""
+    return [_cert_public(r) for r in _load_certs()['items']
+            if _same_student(r, ident) and r.get('status') == 'issued']
+
+
+def _issue_certificates(data, issued_by='admin'):
+    """Выдаёт бланк сразу списку учеников.
+
+    Пачкой, а не по одному: по образцам видно, что дипломы вручают в конце
+    потока всей группе, и выдавать их поштучно на двадцать человек — двадцать
+    раз заполнить одну и ту же форму.
+    """
+    template = data.get('template')
+    lang = data.get('lang')
+    if template not in _CERT_TEMPLATES or lang not in _CERT_LANGS:
+        return 400, {'error': 'bad template'}
+    students = data.get('students')
+    if not isinstance(students, list) or not students:
+        return 400, {'error': 'no students'}
+
+    title = _cert_text(data.get('title'))
+    module_id = _cert_text(data.get('moduleId'), 40)
+    if module_id and not title:
+        # Текст повода берём из настроек по выбранному языку, но КОПИРУЕМ в
+        # запись: поправят формулировку модуля — выданные дипломы не должны
+        # задним числом стать другими.
+        for m in _load_cert_modules():
+            if m.get('id') == module_id:
+                title = _cert_text(m.get(lang) or m.get('ru'))
+                break
+    if not title:
+        return 400, {'error': 'no title'}
+
+    course = _cert_text(data.get('course'), 200)
+    teacher = _cert_text(data.get('teacher'), 120)
+    gift_from = _cert_text(data.get('giftFrom'), 120)
+    now = int(time.time() * 1000)
+    try:
+        issued_at = int(data.get('issuedAt') or 0) or now
+    except (TypeError, ValueError):
+        issued_at = now
+
+    issued, skipped = [], []
+    with _lock:
+        store = _load_certs()
+        users = {_identity(u): u for u in _load_users()}
+        for raw in students[:500]:
+            entry = raw if isinstance(raw, dict) else {'phone': raw}
+            ident = _identity(entry)
+            if not ident:
+                skipped.append({'student': str(raw)[:60], 'why': 'bad phone'})
+                continue
+            known = users.get(ident) or {}
+            # Имя правится при выдаче и хранится в самой записи: ученик писал
+            # его сам при регистрации — бывает строчными и с опечаткой, а на
+            # бланке оно должно стоять так, как решил админ.
+            name = _cert_text(entry.get('name') or known.get('name'), 120)
+            if not name:
+                skipped.append({'student': ident, 'why': 'no name'})
+                continue
+            dup = next((r for r in store['items']
+                        if _same_student(r, ident)
+                        and r.get('status') == 'issued'
+                        and r.get('template') == template
+                        and (r.get('moduleId') or '') == module_id
+                        and (r.get('course') or '') == course), None)
+            if dup:
+                # Двойное нажатие не должно оборачиваться двумя одинаковыми
+                # дипломами с разными номерами.
+                skipped.append({'student': ident, 'why': 'already',
+                                'number': dup.get('number')})
+                continue
+            if len(store['items']) >= _MAX_CERTS:
+                return 507, {'error': 'full', 'issued': issued,
+                             'skipped': skipped}
+            rec = {
+                'number': _next_cert_number(
+                    store, time.gmtime(issued_at / 1000).tm_year),
+                'student': ident,
+                'name': name,
+                'gender': known.get('gender') or entry.get('gender') or '',
+                'lang': lang,
+                'template': template,
+                'moduleId': module_id,
+                'title': title,
+                'course': course,
+                'teacher': teacher,
+                'giftFrom': gift_from,
+                'issuedAt': issued_at,
+                'issuedBy': issued_by,
+                'status': 'issued',
+            }
+            store['items'].append(rec)
+            issued.append(rec)
+        if issued:
+            _save_certs(store)
+    return 201, {'issued': issued, 'skipped': skipped}
+
+
+def _update_certificate(data):
+    """Правка выданного: имя, повод, язык, курс, устаз, статус.
+
+    Номер и ученик не меняются — иначе это уже другой документ, и его надо
+    выдавать заново, чтобы в реестре осталась история.
+    """
+    number = _cert_text(data.get('number'), 40)
+    if not number:
+        return 400, {'error': 'bad request'}
+    fields = {}
+    for key, limit in (('name', 120), ('title', 300), ('course', 200),
+                       ('teacher', 120), ('giftFrom', 120)):
+        if key in data:
+            fields[key] = _cert_text(data.get(key), limit)
+    if 'lang' in data:
+        if data.get('lang') not in _CERT_LANGS:
+            return 400, {'error': 'bad lang'}
+        fields['lang'] = data['lang']
+    if 'template' in data:
+        if data.get('template') not in _CERT_TEMPLATES:
+            return 400, {'error': 'bad template'}
+        fields['template'] = data['template']
+    if 'status' in data:
+        if data.get('status') not in ('issued', 'revoked'):
+            return 400, {'error': 'bad status'}
+        fields['status'] = data['status']
+    if not fields:
+        return 400, {'error': 'nothing to change'}
+    with _lock:
+        store = _load_certs()
+        for r in store['items']:
+            if r.get('number') == number:
+                r.update(fields)
+                r['updatedAt'] = int(time.time() * 1000)
+                _save_certs(store)
+                return 200, r
+    return 404, {'error': 'not found'}
+
+
+def _delete_certificate(data):
+    """Убирает запись совсем. Номер при этом не освобождается."""
+    number = _cert_text(data.get('number'), 40)
+    if not number:
+        return 400, {'error': 'bad request'}
+    with _lock:
+        store = _load_certs()
+        rest = [r for r in store['items'] if r.get('number') != number]
+        if len(rest) == len(store['items']):
+            return 404, {'error': 'not found'}
+        store['items'] = rest
+        _save_certs(store)
+    return 200, {'number': number, 'deleted': True}
+
+
 def _grant_access(data):
     """Выдаёт доступ. days=None/0 → бессрочно, иначе срок в днях."""
     ident = _identity(data)
@@ -1231,6 +1491,9 @@ def _upsert_user(data):
     out.pop('authKey', None)
     # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
     out['access'] = _access_for(ident)
+    # Свои сертификаты — тем же ответом: отдельный запрос за ними означал бы
+    # ещё один поход в сеть на каждом запуске приложения.
+    out['certificates'] = _certificates_for(ident)
     return out
 
 
@@ -2198,6 +2461,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(507, rec)
                 return
             self._send_json(201, rec)
+            return
+        if p in ('/certificates/issue', '/certificates/update',
+                 '/certificates/delete', '/cert/modules'):
+            # Выдача — только у админа: это документ с печатью организации.
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            if p == '/certificates/issue':
+                code, body = _issue_certificates(data)
+            elif p == '/certificates/update':
+                code, body = _update_certificate(data)
+            elif p == '/certificates/delete':
+                code, body = _delete_certificate(data)
+            else:
+                code, body = _save_cert_modules(data)
+            self._send_json(code, body)
             return
         if p in ('/teachers/flag', '/teachers/delete'):
             if self._role_checked() != 'admin':
