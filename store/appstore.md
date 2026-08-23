@@ -158,6 +158,20 @@ App Store позволяет добавить вторую локаль (Kyrgyz)
 ```
 The app is free, has no ads and no in-app purchases.
 
+WHAT WORKS WITHOUT AN ACCOUNT
+Registration is not required to use the app. Prayer times, the Quran reader,
+the qibla compass, settings, the azkar and dua collection, the Ramadan
+screen, the 99 Names of Allah, the dhikr counter, community news and
+watching a live broadcast are all available immediately, with no sign-up.
+
+An account is only needed for features that cannot exist without one: the
+prayer tracker (a personal record the teacher can see and which moves with
+the account to a new phone), coins and the rewards a teacher hands out for
+them, the course catalogue (access is granted by the teacher to a specific
+student), certificates (issued in the student's name) and posting in the
+live chat (messages carry the profile name, which is also what reporting and
+hiding an author rely on).
+
 HOW TO SIGN IN
 Accounts are created inside the app. Please tap the person icon in the top-left corner of the home
 screen ("Аккаунт"), switch to the "Регистрация" tab and register with:

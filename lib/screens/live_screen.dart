@@ -10,6 +10,7 @@ import '../services/comment_service.dart';
 import '../services/live_service.dart';
 import '../services/lang.dart';
 import '../theme.dart';
+import '../widgets/account_gate.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 
@@ -568,7 +569,14 @@ class _LiveViewState extends State<_LiveView> {
             : t('Не удалось отправить жалобу — проверьте связь'))));
   }
 
+  /// Поле ввода — только вошедшим.
+  ///
+  /// Смотреть эфир может кто угодно: это обычное видео, аккаунт для него не
+  /// нужен. А писать — нет: сообщение уходит под именем из профиля, по этому
+  /// же имени работают жалоба и «скрыть автора». У гостей имя было бы одно на
+  /// всех («Гость»), и блокировка одного грубияна прятала бы всех сразу.
   Widget _inputRow() {
+    if (!AccountGate.isOpen(context)) return _signInToWriteRow();
     return Row(
       children: [
         Expanded(
@@ -618,6 +626,30 @@ class _LiveViewState extends State<_LiveView> {
                   : const Icon(Icons.send, size: 20, color: Colors.white),
             ),
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _signInToWriteRow() {
+    return Row(
+      children: [
+        Icon(Icons.lock_outline,
+            size: 18, color: Colors.white.withValues(alpha: 0.5)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            t('Комментарии — для зарегистрированных'),
+            style: TextStyle(
+                fontSize: 13.5,
+                color: Colors.white.withValues(alpha: 0.7)),
+          ),
+        ),
+        TextButton(
+          onPressed: () => AccountGate.invite(context, t('Чат эфира')),
+          child: Text(t('Войти'),
+              style: const TextStyle(
+                  color: AppColors.gold, fontWeight: FontWeight.w600)),
         ),
       ],
     );

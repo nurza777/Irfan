@@ -305,8 +305,10 @@ class _RootScreenState extends State<RootScreen> {
       );
     }
 
-    // Без аккаунта открыты только время намаза, Коран, кибла и настройки.
-    // Страницы со своих мест не убираем — иначе поехали бы индексы всего
+    // Без аккаунта закрыт только трекер: его отметки — это запись ученика,
+    // она уходит устазу и переезжает между телефонами вместе с аккаунтом.
+    // Остальные страницы считаются на самом телефоне и открыты всем.
+    // Страница со своего места не убирается — иначе поехали бы индексы всего
     // PageView и переходы `_goTo`; вместо содержимого показываем замок.
     final open = AccountGate.isOpen(context);
     return Scaffold(
@@ -332,23 +334,8 @@ class _RootScreenState extends State<RootScreen> {
                 onOpenQibla: () => _goTo(0),
               ),
             ),
-            _flipPage(
-                3,
-                open
-                    ? const ZikrPage()
-                    : const LockedPage(
-                        icon: Icons.blur_circular,
-                        title: 'Счётчик зикров',
-                        subtitle: 'Дневные цели, обеты и коины за зикры '
-                            'считаются по вашему аккаунту.')),
-            _flipPage(
-                4,
-                open
-                    ? const NewsPage()
-                    : const LockedPage(
-                        icon: Icons.campaign_outlined,
-                        title: 'Новости',
-                        subtitle: 'Объявления устаза для учеников.')),
+            _flipPage(3, const ZikrPage()),
+            _flipPage(4, const NewsPage()),
           ],
         ),
       ),

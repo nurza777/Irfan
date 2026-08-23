@@ -493,11 +493,15 @@ void showMoreSheet(
                   const SizedBox(height: 8),
                   // Замок ставится здесь, а не внутри каждого экрана: так
                   // видно одним взглядом, что открыто без аккаунта, а что нет.
+                  // Под замком только то, что без учётной записи не имеет
+                  // смысла (разбор — в AccountGate): всё, что работает на
+                  // самом телефоне, открыто и без регистрации.
                   _MenuTile(
                     icon: Icons.menu_book_outlined,
                     title: 'Азкары и дуа',
                     subtitle: 'Утро/вечер, после намаза, поминания',
                     sheet: ctx,
+                    free: true,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const AzkarScreen())),
                   ),
@@ -506,6 +510,7 @@ void showMoreSheet(
                     title: 'Рамадан',
                     subtitle: 'Сухур, ифтар и дни поста',
                     sheet: ctx,
+                    free: true,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(
                             builder: (_) => const RamadanScreen())),
@@ -516,6 +521,7 @@ void showMoreSheet(
                     title: 'Прямой эфир',
                     subtitle: 'Трансляции устаза',
                     sheet: ctx,
+                    free: true,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const LiveScreen())),
                   ),
@@ -524,6 +530,7 @@ void showMoreSheet(
                     title: 'Новости',
                     subtitle: 'Объявления от устаза',
                     sheet: ctx,
+                    free: true,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const NewsScreen())),
                   ),
@@ -540,6 +547,7 @@ void showMoreSheet(
                     title: 'Счётчик зикров',
                     subtitle: 'Тасбих и дневные цели',
                     sheet: ctx,
+                    free: true,
                     open: (_) => onOpenZikr(),
                   ),
                   _MenuTile(
@@ -565,6 +573,7 @@ void showMoreSheet(
                     title: '99 имён Аллаха',
                     subtitle: 'аль-Асма аль-Хусна',
                     sheet: ctx,
+                    free: true,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const NamesScreen())),
                   ),
