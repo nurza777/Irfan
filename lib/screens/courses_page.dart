@@ -30,6 +30,19 @@ class _TeacherEntry {
 
   int get courseCount => courses?.courseCount ?? 0;
   int get lessonCount => courses?.lessonCount ?? 0;
+
+  /// Показывать ли карточку ученику.
+  ///
+  /// Учётку устаза заводит админ, и сервер сразу ставит ей `approved`
+  /// (`_staff_op` → `_set_teacher_status`) — то есть в списке оказывается
+  /// каждый выданный логин, включая служебные. Так в каталог попала карточка
+  /// «App Review», заведённая для проверки Apple: ученик видел её наравне с
+  /// настоящими устазами.
+  ///
+  /// Правило: карточка нужна, если за ней что-то есть — уроки или хотя бы
+  /// рассказ о себе. Пустая запись без описания ведёт на экран «здесь пока
+  /// пусто», то есть это тупик, а не раздел.
+  bool get visible => lessonCount > 0 || courseCount > 0 || bio.isNotEmpty;
 }
 
 class _CoursesPageState extends State<CoursesPage> {
@@ -127,7 +140,7 @@ class _CoursesPageState extends State<CoursesPage> {
         courses: block,
       ));
     }
-    return out;
+    return [for (final e in out) if (e.visible) e];
   }
 
   @override
