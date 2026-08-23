@@ -463,22 +463,22 @@ void showMoreSheet(
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      // Лист тянется и прокручивается: пунктов больше, чем влезает в экран,
-      // и раньше нижние были просто не видны.
+      // Высота — по содержимому, а не по доле экрана: раньше лист занимал
+      // фиксированные 70% и под последним пунктом оставалась пустая полоса.
+      // `shrinkWrap` в рамке 88% высоты: пока пункты влезают, лист ровно по
+      // ним, а на коротком экране упирается в потолок и начинает
+      // прокручиваться. `isScrollControlled` нужен и здесь — без него потолок
+      // листа 9/16 экрана, ниже нашего.
       isScrollControlled: true,
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.4,
-        maxChildSize: 0.95,
-        snap: true,
-        snapSizes: const [0.7],
-        expand: false,
-        builder: (ctx, scrollController) => GlassSheet(
+      builder: (ctx) => ConstrainedBox(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.88),
+        child: GlassSheet(
           opacity: 0.82,
           material: true,
           child: SafeArea(
               child: ListView(
-                controller: scrollController,
+                shrinkWrap: true,
                 padding: EdgeInsets.zero,
                 children: [
                   const SizedBox(height: 12),
