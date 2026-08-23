@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/lang.dart';
 import '../../services/staff_api.dart';
 import '../../widgets/dome_background.dart';
 import '../../widgets/glass.dart';
@@ -258,7 +259,9 @@ class _CoursesTabState extends State<CoursesTab> {
                                                             FontWeight
                                                                 .w600)),
                                             Text(
-                                              '${d.courses.length} курс(ов) · $lessons урок(ов)',
+                                              '${plural(d.courses.length, 'курс', 'курса', 'курсов')}'
+                                              ' · '
+                                              '${plural(lessons, 'урок', 'урока', 'уроков')}',
                                               style: TextStyle(
                                                   fontSize: 13,
                                                   color: Colors
@@ -465,7 +468,8 @@ class _DirectionScreenState extends State<DirectionScreen> {
                                           fontWeight:
                                               FontWeight.w600)),
                                   Text(
-                                    '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} урок(ов)',
+                                    '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}'
+                                    '${plural(c.lessons.length, 'урок', 'урока', 'уроков')}',
                                     style: TextStyle(
                                         fontSize: 13,
                                         color: Colors.white

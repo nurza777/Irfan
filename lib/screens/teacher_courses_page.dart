@@ -210,7 +210,8 @@ class _CourseCardState extends State<_CourseCard> {
                 subtitle: Text(
                   !open
                       ? t('Доступ закрыт — обратитесь к устазу')
-                      : '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}${c.lessons.length} ${t('урок(ов)')}',
+                      : '${c.subtitle.isEmpty ? '' : '${c.subtitle} · '}'
+                          '${plural(c.lessons.length, 'урок', 'урока', 'уроков')}',
                   style: TextStyle(
                       fontSize: 13,
                       color: open

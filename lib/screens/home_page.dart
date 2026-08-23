@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:hijri/hijri_calendar.dart';
 
 import '../app_state.dart';
+import '../services/auth_service.dart';
 import '../services/lang.dart';
 import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
@@ -283,6 +284,7 @@ class _TrackerQuestionBanner extends StatelessWidget {
     // Ответ уходит в трекер, а трекер — часть аккаунта. Без него спрашивать
     // не о чем: отметка всё равно никуда не запишется.
     if (!AccountGate.isOpen(context)) return const SizedBox.shrink();
+    final female = state.auth?.current?.gender == Gender.female;
     final due = state.tracker!.dueQuestion(state.today!, state.now);
 
     return AnimatedSwitcher(
@@ -312,7 +314,8 @@ class _TrackerQuestionBanner extends StatelessWidget {
                               backgroundColor: AppColors.accentGreen),
                           onPressed: () =>
                               state.markPrayer(due, PrayerStatus.read),
-                          child: Text(t('Да, прочитал(а)')),
+                          child: Text(gendered('Да, прочитал(а)',
+                              'Да, прочитал', 'Да, прочитала', female)),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -326,7 +329,8 @@ class _TrackerQuestionBanner extends StatelessWidget {
                           ),
                           onPressed: () =>
                               state.markPrayer(due, PrayerStatus.missed),
-                          child: Text(t('Пропустил(а)')),
+                          child: Text(gendered('Пропустил(а)',
+                              'Пропустил', 'Пропустила', female)),
                         ),
                       ),
                     ],

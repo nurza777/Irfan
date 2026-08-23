@@ -262,7 +262,9 @@ class _TeacherCard extends StatelessWidget {
                     ? entry.bio
                     : entry.lessonCount == 0
                         ? t('Уроки скоро появятся')
-                        : '${entry.courseCount} ${t('курс(ов)')} · ${entry.lessonCount} ${t('урок(ов)')}',
+                        : '${plural(entry.courseCount, 'курс', 'курса', 'курсов')}'
+                            ' · '
+                            '${plural(entry.lessonCount, 'урок', 'урока', 'уроков')}',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
