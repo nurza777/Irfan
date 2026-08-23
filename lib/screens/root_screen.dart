@@ -29,6 +29,7 @@ import 'courses_page.dart';
 import '../services/staff_auth.dart';
 import 'staff/staff_home.dart';
 import 'qibla_page.dart';
+import 'quran_page.dart';
 import 'ramadan_screen.dart';
 import 'restore_account_screen.dart';
 import 'settings_screen.dart';
@@ -198,6 +199,11 @@ class _RootScreenState extends State<RootScreen> {
             debugPrint('QURAN_DL result=$ok downloaded=$done '
                 'bytes=$size (${formatBytes(size)})');
           });
+        } else if (screen == 'quran_list') {
+          // Список сур: с него начинается раздел, а кнопку «КОРАН» на
+          // главной в симуляторе нажать нечем.
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const QuranPage()));
         } else if (screen.startsWith('quran')) {
           final qs = AppScope.of(context).quran!;
           if (screen == 'quran_speak' && reciterArg != null) {

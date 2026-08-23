@@ -8,6 +8,7 @@ import '../services/reciters.dart';
 import '../services/quran_service.dart';
 import '../services/tajwid.dart';
 import '../services/lang.dart';
+import '../services/surah_names.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
@@ -119,12 +120,12 @@ class _SurahScreenState extends State<SurahScreen> {
             centerTitle: true,
             title: Column(
               children: [
-                Text(quran.getSurahName(surah),
+                Text(surahName(surah),
                     style: const TextStyle(fontSize: 18)),
                 Text(
                   '${quran.getSurahNameArabic(surah)} · '
                   '${t(quran.getPlaceOfRevelation(surah) == "Makkah" ? "Мекканская" : "Мединская")} · '
-                  '${quran.getVerseCount(surah)} аят',
+                  '${verseCountLabel(quran.getVerseCount(surah))}',
                   style: const TextStyle(
                       fontSize: 12, color: AppColors.goldLight),
                 ),

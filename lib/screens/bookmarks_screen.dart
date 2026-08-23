@@ -4,6 +4,7 @@ import 'package:quran/quran.dart' as quran;
 import '../app_state.dart';
 import '../services/quran_service.dart';
 import '../services/lang.dart';
+import '../services/surah_names.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
@@ -155,7 +156,7 @@ class _List extends StatelessWidget {
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(quran.getSurahName(surah),
+                          child: Text(surahName(surah),
                               style: const TextStyle(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w600)),
