@@ -14,10 +14,12 @@ import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
+import '../services/settings_service.dart';
 import '../services/verify_service.dart';
 import '../services/visual_effects.dart';
 import '../services/voice_service.dart';
 import '../widgets/account_gate.dart';
+import '../widgets/city_picker.dart';
 import '../widgets/dome_background.dart';
 import 'home_page.dart';
 import 'names_screen.dart';
@@ -198,6 +200,24 @@ class _RootScreenState extends State<RootScreen> {
             final size = await cache.totalSize();
             debugPrint('QURAN_DL result=$ok downloaded=$done '
                 'bytes=$size (${formatBytes(size)})');
+          });
+        } else if (screen == 'city') {
+          // `city` — открыть выбор города, `city:<название>` — сразу спросить
+          // геокодер и применить найденное. Второй вид нужен потому, что в
+          // симуляторе нечем ни печатать, ни попасть по строке поиска:
+          // всплывашка автозамены перекрывает её.
+          if (reciterArg != null && reciterArg.isNotEmpty) {
+            SettingsService.findCity(reciterArg).then((c) {
+              debugPrint('CITY found=${c?.name} ${c?.lat},${c?.lon}');
+              if (c != null && mounted) {
+                AppScope.of(context).setManualCity(c);
+              }
+            });
+            return;
+          }
+          showCityPicker(context).then((c) {
+            debugPrint('CITY picked=${c?.name} ${c?.lat},${c?.lon}');
+            if (c != null && mounted) AppScope.of(context).setManualCity(c);
           });
         } else if (screen == 'quran_list') {
           // Список сур: с него начинается раздел, а кнопку «КОРАН» на

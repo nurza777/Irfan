@@ -9,6 +9,7 @@ import '../theme.dart';
 import 'staff/staff_home.dart';
 import 'wallpaper_sheet.dart';
 import '../widgets/dome_background.dart';
+import '../widgets/city_picker.dart';
 import '../widgets/glass.dart';
 import 'zikr_settings_sheet.dart';
 
@@ -107,14 +108,27 @@ class SettingsScreen extends StatelessWidget {
                                   spacing: 8,
                                   runSpacing: 8,
                                   children: [
-                                    for (final c
-                                        in SettingsService.cities)
+                                    // Быстрые фишки — только начало списка:
+                                    // городов теперь полсотни, и стеной из
+                                    // них экран настроек не заваливаем.
+                                    for (final c in SettingsService.cities
+                                        .take(SettingsService.quickCities))
                                       _cityChip(
                                           c,
-                                          c.name ==
-                                              s.manualCity.name,
-                                          () =>
-                                              state.setManualCity(c)),
+                                          c.name == s.manualCity.name,
+                                          () => state.setManualCity(c)),
+                                    // Выбранный не из быстрых (нашли по
+                                    // названию или взяли из конца списка)
+                                    // всё равно должен быть виден.
+                                    if (!SettingsService.cities
+                                        .take(SettingsService.quickCities)
+                                        .any((c) =>
+                                            c.name == s.manualCity.name))
+                                      _cityChip(s.manualCity, true, () {}),
+                                    _cityChip(
+                                        City(t('Другой город…'), 0, 0),
+                                        false,
+                                        () => _pickCity(context, state)),
                                   ],
                                 ),
                               )
@@ -264,6 +278,11 @@ class SettingsScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _pickCity(BuildContext context, AppState state) async {
+    final picked = await showCityPicker(context);
+    if (picked != null) await state.setManualCity(picked);
   }
 
   Widget _cityChip(City c, bool active, VoidCallback onTap) {
