@@ -30,6 +30,25 @@ class _NamesScreenState extends State<NamesScreen> {
     super.dispose();
   }
 
+  /// Список всех имён с поиском.
+  ///
+  /// Без него до 77-го имени надо было свайпнуть 76 раз: PageView — хороший
+  /// способ читать подряд и негодный, чтобы найти нужное.
+  Future<void> _openIndex() async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => const _NamesIndexSheet(),
+    );
+    if (picked == null || !mounted) return;
+    VoiceService.instance.stop();
+    // jumpToPage, а не animateToPage: пролистывать 90 страниц анимацией —
+    // это несколько секунд мелькания.
+    _controller.jumpToPage(picked);
+    setState(() => _index = picked);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -47,6 +66,12 @@ class _NamesScreenState extends State<NamesScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: t('Все имена'),
+            onPressed: _openIndex,
+            icon: const Icon(Icons.format_list_numbered,
+                color: AppColors.goldLight),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: TextButton.icon(
@@ -65,10 +90,6 @@ class _NamesScreenState extends State<NamesScreen> {
           child: Column(
             children: [
               SizedBox(height: MediaQuery.of(context).padding.top + 56),
-              Text((appLang == Lang.ky ? 'Ысым ${_index + 1} / ${asmaulHusna.length}' : 'Имя ${_index + 1} из ${asmaulHusna.length}'),
-                  style: TextStyle(
-                      fontSize: 15,
-                      color: Colors.white.withValues(alpha: 0.8))),
               Expanded(
                 // Круг и кольцо зафиксированы, листается только содержимое.
                 child: Center(
@@ -311,4 +332,155 @@ class _RingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RingPainter old) => false;
+}
+
+
+/// Лист «все имена»: поиск по номеру, имени и значению.
+class _NamesIndexSheet extends StatefulWidget {
+  const _NamesIndexSheet();
+
+  @override
+  State<_NamesIndexSheet> createState() => _NamesIndexSheetState();
+}
+
+class _NamesIndexSheetState extends State<_NamesIndexSheet> {
+  final _query = TextEditingController();
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  /// Сравниваем без диакритики и дефисов: человек набирает «аль азиз»,
+  /// а в данных «Аль-‘Азиз» — иначе поиск молчал бы на верном запросе.
+  String _fold(String v) => v
+      .toLowerCase()
+      .replaceAll('ё', 'е')
+      .replaceAll(RegExp(r"[^а-яёa-z0-9]"), '');
+
+  List<int> get _found {
+    final q = _fold(_query.text);
+    if (q.isEmpty) return [for (var i = 0; i < asmaulHusna.length; i++) i];
+    return [
+      for (var i = 0; i < asmaulHusna.length; i++)
+        if ('${asmaulHusna[i].number}' == q ||
+            _fold(asmaulHusna[i].translit).contains(q) ||
+            _fold(asmaulHusna[i].localizedMeaning).contains(q) ||
+            _fold(asmaulHusna[i].meaning).contains(q))
+          i,
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final found = _found;
+    return ConstrainedBox(
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.88),
+      child: GlassSheet(
+        opacity: 0.86,
+        material: true,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 12),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+                  child: TextField(
+                    controller: _query,
+                    autofocus: false,
+                    onChanged: (_) => setState(() {}),
+                    style: const TextStyle(fontSize: 15),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.search,
+                          size: 20, color: AppColors.gold),
+                      hintText: t('Имя, значение или номер'),
+                      hintStyle: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.45)),
+                      filled: true,
+                      fillColor: Colors.black.withValues(alpha: 0.28),
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 12),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.18)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(color: AppColors.gold),
+                      ),
+                    ),
+                  ),
+                ),
+                Flexible(
+                  child: found.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+                          child: Text(t('Ничего не найдено'),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color:
+                                      Colors.white.withValues(alpha: 0.7))),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          itemCount: found.length,
+                          itemBuilder: (context, k) {
+                            final i = found[k];
+                            final n = asmaulHusna[i];
+                            return ListTile(
+                              dense: true,
+                              leading: SizedBox(
+                                width: 34,
+                                child: Text('${n.number}',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        color: AppColors.goldLight
+                                            .withValues(alpha: 0.85))),
+                              ),
+                              title: Text(n.translit,
+                                  style: const TextStyle(
+                                      fontSize: 15.5,
+                                      fontWeight: FontWeight.w600)),
+                              subtitle: Text(n.localizedMeaning,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: Colors.white
+                                          .withValues(alpha: 0.65))),
+                              trailing: Text(n.arabic,
+                                  style: const TextStyle(
+                                      fontSize: 17,
+                                      fontFamily: 'AmiriQuran',
+                                      color: AppColors.cream)),
+                              onTap: () => Navigator.pop(context, i),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
