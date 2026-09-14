@@ -178,6 +178,21 @@ async function postJson(path, body) {
 
 /// Как postJson, но возвращает текст ошибки от сервера: на учётках он
 /// осмысленный («логин занят», «пароль — минимум 8 символов»).
+/// POST, возвращающий данные (а не только ошибку, как postJson).
+/// Нужен переписке с поддержкой: список веток и сама ветка приходят POST-ом,
+/// чтобы номер ученика не оседал в адресе запроса и журналах.
+async function postData(path, body) {
+  try {
+    const r = await api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
 async function staffOp(body) {
   const r = await api('/staff', {
     method: 'POST',
@@ -288,6 +303,9 @@ const state = {
   // номера: коды выдаёт человек, и без контакта фраза «попросите код у
   // устаза» никуда не ведёт.
   support: {},
+  chatThreads: [],
+  chatOpen: null,      // номер открытой переписки
+  chatMessages: [],
   coursesRaw: {},
   teacherId: '',
   pendingCourses: [],
@@ -298,15 +316,18 @@ const state = {
   // Кого отметили галочками для выдачи. Живёт отдельно от разметки: поиск
   // прячет строки, а не перерисовывает список, иначе отметки слетали бы.
   certPick: new Set(),
+  // Каталог книг (порядок — как в приложении) и открытая форма книги:
+  // { index: -1 для новой, book: {...} } или null.
+  books: [],
+  bookEdit: null,
 };
 
 async function loadAll() {
-  const [users, access, codes, courses, media, teachers, queue, pn, pa, staff,
-         crashes, support, certs, certModules] =
+  const [users, access, courses, media, teachers, queue, pn, pa, staff,
+         crashes, support, certs, certModules, books] =
     await Promise.all([
       getJson('/users.json', []),
       getJson('/access.json', []),
-      getJson('/verifications.json', []),
       getJson('/courses.json', { directions: [] }),
       getJson('/media.json', { items: [], disk: {} }),
       getJson('/teachers.json', { teachers: [] }),
@@ -318,7 +339,9 @@ async function loadAll() {
       getJson('/support.json', {}),
       getJson('/certificates.json', { items: [] }),
       getJson('/cert_modules.json', { items: [] }),
+      getJson('/books.json', { items: [] }),
     ]);
+  state.books = Array.isArray(books?.items) ? books.items : [];
   state.support = (support && typeof support === 'object') ? support : {};
   // Свежие сверху: последняя выдача — та, к которой чаще возвращаются.
   state.certs = (Array.isArray(certs?.items) ? certs.items : [])
@@ -330,6 +353,10 @@ async function loadAll() {
   state.crashes = (Array.isArray(crashes) ? crashes : [])
     .slice().sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   state.coursesRaw = courses || {};
+  // Сводка обращений в поддержку. Отдельным запросом: она приходит POST-ом,
+  // чтобы номера учеников не попадали в адреса и журналы сервера.
+  const chat = await postData('/support/threads', {});
+  state.chatThreads = (chat && chat.threads) || [];
   // Полные заявки — по файлу на устаза; список выше даёт только сводку.
   state.pendingCourses = (await Promise.all(
     (queue?.pending || []).map((s) =>
@@ -338,7 +365,6 @@ async function loadAll() {
   )).filter(Boolean);
   state.users = Array.isArray(users) ? users : [];
   state.access = Array.isArray(access) ? access : [];
-  state.codes = (Array.isArray(codes) ? codes : []).slice().reverse();
   // Выбранный устаз: сохраняем прежний, если он ещё есть.
   const blocks = teacherBlocks();
   if (!blocks.some((b) => b.id === state.teacherId)) {
@@ -401,54 +427,30 @@ const TABS = [
   ['teachers', 'Устазы', viewTeachers],
   ['courses', 'Курсы', viewCourses],
   ['media', 'Видео', viewMedia],
+  ['books', 'Книги', viewBooks],
   ['access', 'Доступы', viewAccess],
   ['certs', 'Сертификаты', viewCerts],
-  ['codes', 'Коды', viewCodes],
+  ['contacts', 'Контакты', viewContacts],
+  ['support', 'Поддержка', viewSupport],
   ['moderation', 'Модерация', viewModeration],
   ['crashes', 'Сбои', viewCrashes],
 ];
 let tab = 'stats';
 
 function render() {
-  const waiting = waitingCodes();
+  // Непрочитанные обращения — прямо на вкладке: иначе о них узнаёшь, только
+  // если сам зашёл в «Поддержку».
+  const unread = (state.chatThreads || [])
+    .reduce((s, t) => s + (t.unread || 0), 0);
   $('#nav').innerHTML = TABS
-    .map(([id, title]) => {
-      // Ученик ждёт, пока код назовут вслух. Счётчик прямо в меню — чтобы это
-      // было видно из любого раздела, а не только когда открыт нужный.
-      const badge = (id === 'codes' && waiting) ? ` (${waiting})` : '';
-      return `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${title}${badge}</button>`;
-    })
+    .map(([id, title]) =>
+      `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${title}${
+        id === 'support' && unread ? ` <span class="tag warn">${unread}</span>` : ''}</button>`)
     .join('');
   $('#nav').querySelectorAll('button').forEach((b) =>
     (b.onclick = () => { tab = b.dataset.tab; render(); }));
   $('#view').innerHTML = (TABS.find(([id]) => id === tab) || TABS[0])[2]();
   wire();
-  watchCodes();
-}
-
-/// Пока открыт раздел «Коды», панель перечитывает данные сама.
-///
-/// Обновлять всё подряд по таймеру нельзя: в «Курсах» и «Видео» это стирало
-/// бы наполовину заполненную форму под руками. А здесь смотреть не на что,
-/// кроме как на новые запросы, и нажимать «Обновить» вслепую — то же самое
-/// ожидание, только руками.
-let codesTimer = null;
-
-function watchCodes() {
-  clearInterval(codesTimer);
-  if (tab !== 'codes') return;
-  codesTimer = setInterval(async () => {
-    if (tab !== 'codes' || document.hidden) return;
-    // Форма контакта могла быть уже заполнена — сохраняем введённое.
-    const draft = $('#sp-wa') ? {
-      whatsapp: $('#sp-wa').value,
-      telegram: $('#sp-tg').value,
-      note: $('#sp-note').value,
-    } : null;
-    await loadAll();
-    if (draft) state.support = { ...state.support, ...draft };
-    render();
-  }, 20000);
 }
 
 // — Статистика
@@ -461,7 +463,12 @@ function viewStats() {
   const men = u.filter((x) => x.gender === 'male').length;
   const women = u.filter((x) => x.gender === 'female').length;
   const noGender = total - men - women;
-  const verified = u.filter((x) => x.verified).length;
+  // Раньше здесь считалось «подтвердили телефон». Подтверждения кодом
+  // больше нет: человек входит номером и паролем, и важно другое — записан
+  // ли пароль на сервере. Пока не записан, аккаунт заберёт любой, кто знает
+  // номер (см. _restore_account). Значение появляется само, как только
+  // приложение выйдет на связь.
+  const withPw = u.filter((x) => x.pwSetAt).length;
   const blocked = u.filter((x) => x.blocked).length;
   const week = Date.now() - 7 * 864e5;
   const active = u.filter((x) => (x.lastSeen || 0) > week).length;
@@ -491,7 +498,7 @@ function viewStats() {
     <div class="kpis">
       <div class="kpi"><b>${total}</b><span>всего</span></div>
       <div class="kpi"><b>${active}</b><span>активны за неделю</span></div>
-      <div class="kpi"><b>${verified}</b><span>подтвердили телефон</span></div>
+      <div class="kpi"><b>${withPw}</b><span>с паролем на сервере</span></div>
       <div class="kpi"><b>${prayers}</b><span>намазов всего</span></div>
       <div class="kpi"><b>${bestStreak}</b><span>лучшая серия</span></div>
       ${blocked ? `<div class="kpi"><b style="color:var(--red)">${blocked}</b><span>заблокировано</span></div>` : ''}
@@ -545,7 +552,7 @@ function usersTable(query = '') {
       return `<tr class="row" data-id="${esc(id)}">
         <td><b>${esc(u.name || '—')}</b>${u.blocked ? ' <span class="tag bad">блок</span>' : ''}</td>
         <td><b>${esc(u.phone || u.email || '—')}</b>
-          ${u.phone ? (u.verified ? '<span class="tag ok">✓</span>' : '<span class="tag warn">не подтв.</span>') : ''}</td>
+          ${u.phone && !u.pwSetAt ? '<span class="tag warn">без пароля</span>' : ''}</td>
         <td>${u.gender === 'male' ? 'муж' : u.gender === 'female' ? 'жен' : '—'} ·
             ${u.age || '—'}<br><span class="muted">${esc(u.city || '')}</span></td>
         <td>${u.prayersRead || 0}</td>
@@ -573,8 +580,13 @@ function openStudent(id) {
     <div class="card" style="margin:0 0 12px">
       <h2>Анкета</h2>
       <table>
-        <tr><td class="muted">Номер</td><td>${esc(u.phone || u.email || 'не указан')}
-          ${u.phone ? (u.verified ? '<span class="tag ok">подтверждён</span>' : '<span class="tag warn">не подтверждён</span>') : ''}</td></tr>
+        <tr><td class="muted">Номер</td><td>${esc(u.phone || u.email || 'не указан')}</td></tr>
+        <tr><td class="muted">Пароль</td><td>${u.pwSetAt
+          ? '<span class="tag ok">записан</span>'
+            + (u.claimedBlind ? ' <span class="tag warn">аккаунт забрали без пароля</span>' : '')
+          : '<span class="tag warn">ещё не записан</span> '
+            + '<span class="muted">— появится, когда приложение выйдет на связь. '
+            + 'До тех пор аккаунт может забрать любой, кто знает номер.</span>'}</td></tr>
         <tr><td class="muted">Город</td><td>${esc(u.city || 'не указан')}</td></tr>
         <tr><td class="muted">Пол</td><td>${u.gender === 'male' ? 'мужской' : u.gender === 'female' ? 'женский' : 'не указан'}</td></tr>
         <tr><td class="muted">Возраст</td><td>${u.age || 'не указан'}</td></tr>
@@ -625,6 +637,7 @@ function openStudent(id) {
 
     <div class="row-actions">
       <button id="st-block">${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button>
+      <button id="st-pw">Сбросить пароль</button>
       <button class="danger" id="st-del">Удалить из реестра</button>
       <span class="sp" style="flex:1"></span>
       <button id="st-close">Закрыть</button>
@@ -662,6 +675,18 @@ function openStudent(id) {
     const err = await postJson('/users/flag',
       { phone: email, blocked: !u.blocked });
     toast(err || (!u.blocked ? 'Доступ заблокирован' : 'Доступ восстановлен'));
+    await loadAll();
+    $('#dlg').close(); render();
+  };
+
+  // «Забыли пароль». Кода подтверждения в приложении больше нет: человек
+  // входит номером и паролем, а сервер сверяет пароль. Забыл — войти нечем,
+  // пока эта кнопка не снимет прежний: следующий вход запишет новый.
+  $('#st-pw').onclick = async () => {
+    if (!confirm(`Сбросить пароль «${u.name}»? Следующий вход в приложении `
+      + `задаст новый пароль — назовите человеку, что входить надо заново.`)) return;
+    const err = await postJson('/users/resetpass', { phone: email });
+    toast(err || 'Пароль сброшен — следующий вход задаст новый');
     await loadAll();
     $('#dlg').close(); render();
   };
@@ -1062,53 +1087,38 @@ function openCertEditor(number) {
   };
 }
 
-// — Коды подтверждения
+// — Контакты поддержки
 
-/// Сколько кодов ждут выдачи прямо сейчас. Раздел обновляется сам, а
-/// счётчик виден в меню: код называет человек, и пока никто не смотрит в
-/// панель, ученик просто сидит перед пустым полем ввода.
-function waitingCodes() {
-  const now = Date.now();
-  return state.codes.filter((c) => !c.used && (c.expiresAt || 0) > now).length;
-}
-
-/// Имя ученика: в записи кода оно есть только у заведённых после того, как
-/// сервер начал его подставлять, — для остальных смотрим в реестр.
-function codeName(c) {
-  if (c.name) return c.name;
-  const u = state.users.find((x) => identOf(x) === c.phone);
-  return u ? (u.name || '') : '';
-}
-
-function viewCodes() {
+/// Коды подтверждения телефона отсюда убраны вместе с самим подтверждением.
+/// Автоотправка так и не была подключена, код диктовали голосом, и человек
+/// ждал; теперь он входит номером и паролем. Забыл пароль — «Сбросить
+/// пароль» в карточке ученика.
+function viewContacts() {
   const s = state.support || {};
   return `<div class="card">
-    <h2>Коды подтверждения телефона</h2>
-    <p class="muted">Автоотправка не подключена — код называете ученику вы.
-      Код живёт час, попыток — 5. Пока раздел открыт, он обновляется сам.</p>
-    ${state.codes.length ? `<table style="margin-top:10px"><thead><tr>
-      <th>Телефон</th><th>Ученик</th><th>Код</th><th>Когда</th><th>Статус</th></tr></thead><tbody>
-      ${state.codes.map((c) => {
-        const expired = (c.expiresAt || 0) < Date.now();
-        const valid = !c.used && !expired;
-        return `<tr>
-          <td><b>${esc(c.phone)}</b></td>
-          <td class="muted">${esc(codeName(c))}</td>
-          <td style="font-size:20px;letter-spacing:2px">${valid ? esc(c.code) : '••••••'}</td>
-          <td class="muted">${fmtDateTime(c.createdAt)}</td>
-          <td>${c.used ? '<span class="tag ok">использован</span>'
-                : expired ? '<span class="tag">истёк</span>'
-                : '<span class="tag warn">действует</span>'}</td>
-        </tr>`;
-      }).join('')}</tbody></table>` : '<p class="muted">Запросов пока не было.</p>'}
-  </div>
+    <h2>Поддержка: контакты в приложении</h2>
+    <p class="muted">Показываются в двух местах: разделом «Поддержка» в
+      настройках приложения и кнопкой на экране переноса аккаунта — туда
+      идут те, кто забыл пароль. Меняются здесь — пересобирать приложение не
+      нужно. Пусто — раздела в настройках не будет вовсе.</p>
 
-  <div class="card" style="margin-top:14px">
-    <h2>Куда ученику писать за кодом</h2>
-    <p class="muted">Эти контакты приложение показывает кнопками на экране
-      подтверждения номера и при переносе аккаунта на новый телефон. Пусто —
-      кнопок не будет, останется одна фраза «код называет устаз».</p>
-    <p style="margin-top:10px">WhatsApp (номер)<br>
+    <h3 style="margin-top:14px;font-size:15px">Телефоны для звонка</h3>
+    <p class="muted">Имя поясняет, кто снимет трубку. Можно оставить пустым —
+      тогда покажется один номер. Больше восьми приложение не отображает.</p>
+    <div id="sp-phones">
+      ${(Array.isArray(s.phones) ? s.phones : []).map((ph, i) => `
+        <div class="sp-row" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <input class="sp-name" value="${esc(ph && ph.name || '')}" maxlength="60"
+                 placeholder="Кто отвечает" style="max-width:260px">
+          <input class="sp-num" value="${esc(ph && ph.phone || '')}"
+                 placeholder="+996 555 12 34 56" style="max-width:220px">
+          <button data-spdel="${i}">Убрать</button>
+        </div>`).join('')}
+    </div>
+    <p style="margin-top:10px"><button id="sp-add">Добавить номер</button></p>
+
+    <h3 style="margin-top:16px;font-size:15px">Мессенджеры</h3>
+    <p style="margin-top:8px">WhatsApp (номер)<br>
       <input id="sp-wa" value="${esc(s.whatsapp || '')}"
              placeholder="+996 555 12 34 56" style="max-width:340px"></p>
     <p style="margin-top:10px">Telegram (логин без @)<br>
@@ -1119,6 +1129,23 @@ function viewCodes() {
              placeholder="Отвечаем с 9:00 до 20:00" style="max-width:520px"></p>
     <p style="margin-top:12px"><button class="primary" id="sp-save">Сохранить</button></p>
   </div>`;
+}
+
+/// Снимает с формы всё введённое, включая ещё не сохранённые строки.
+/// Нужна и при сохранении, и перед перерисовкой: добавление или удаление
+/// строки перерисовывает карточку, и без этого соседние поля обнулялись бы.
+function spForm() {
+  if (!document.getElementById('sp-wa')) return null;
+  const phones = [...document.querySelectorAll('#sp-phones .sp-row')].map((r) => ({
+    name: r.querySelector('.sp-name').value.trim(),
+    phone: r.querySelector('.sp-num').value.trim(),
+  }));
+  return {
+    whatsapp: document.getElementById('sp-wa').value.trim(),
+    telegram: document.getElementById('sp-tg').value.trim(),
+    note: document.getElementById('sp-note').value.trim(),
+    phones,
+  };
 }
 
 
@@ -1560,6 +1587,141 @@ function viewStaff() {
 /// Падения, собранные с телефонов. Складываются по видам: одна и та же
 /// ошибка у сотни человек — одна строка со счётчиком, иначе в списке
 /// ничего не разглядеть.
+// — Книги
+
+const BOOK_LANGS = { '': 'не указан', ru: 'русский', ky: 'кыргызский' };
+const bookSize = (n) => n ? `${(n / 1048576).toFixed(1).replace('.', ',')} МБ` : '';
+const newBookId = () =>
+  'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+function viewBooks() {
+  const books = state.books || [];
+  const ed = state.bookEdit;
+  if (ed) {
+    const b = ed.book;
+    const pdfs = state.media.filter((m) => /\.pdf$/i.test(m.name));
+    const images = state.media.filter((m) => /\.(jpe?g|png|webp)$/i.test(m.name));
+    const options = (list, cur) => list.map((m) =>
+      `<option value="${esc(m.name)}" ${m.name === cur ? 'selected' : ''}>
+        ${esc(m.title || m.lessonTitle || m.name)} · ${esc(m.name)}${m.size ? ' · ' + bookSize(m.size) : ''}
+      </option>`).join('');
+    return `<div class="card">
+      <p><button id="book-cancel">← К списку книг</button></p>
+      <h2 style="margin:10px 0">${ed.index < 0 ? 'Новая книга' : 'Книга'}</h2>
+      <p>Название<br><input id="bk-title" value="${esc(b.title)}" maxlength="160" style="max-width:520px"></p>
+      <p style="margin-top:10px">Автор<br><input id="bk-author" value="${esc(b.author)}" maxlength="120" style="max-width:520px"></p>
+      <p style="margin-top:10px">Описание (две строки видны в списке)<br>
+        <textarea id="bk-desc" rows="4" maxlength="1200" style="width:100%;max-width:620px">${esc(b.description)}</textarea></p>
+      <p style="margin-top:10px">Язык книги<br><select id="bk-lang">
+        ${Object.entries(BOOK_LANGS).map(([v, l]) =>
+          `<option value="${v}" ${v === (b.lang || '') ? 'selected' : ''}>${l}</option>`).join('')}
+      </select></p>
+
+      <h3 style="margin-top:16px;font-size:15px">Файл PDF</h3>
+      <p><select id="bk-file" style="max-width:620px">
+        <option value="">— выберите загруженный PDF —</option>${options(pdfs, b.file)}
+      </select></p>
+      <p class="muted">или загрузите новый: <input type="file" id="bk-file-up" accept=".pdf,application/pdf"></p>
+
+      <h3 style="margin-top:16px;font-size:15px">Обложка — необязательно</h3>
+      <p><select id="bk-cover" style="max-width:620px">
+        <option value="">— без обложки —</option>${options(images, b.cover)}
+      </select></p>
+      <p class="muted">или загрузите картинку (лучше вертикальную, 2:3):
+        <input type="file" id="bk-cover-up" accept="image/jpeg,image/png,image/webp"></p>
+
+      <p id="bk-progress" class="muted" style="margin-top:10px"></p>
+      <p style="margin-top:12px"><button class="primary" id="book-save">Сохранить</button></p>
+    </div>`;
+  }
+  const names = new Set(state.media.map((m) => m.name));
+  return `<div class="card">
+    <h2>Книги</h2>
+    <p class="muted">Раздел «Книги» в приложении. Открыт всем, в том числе без
+      регистрации: книгу скачивают на телефон и читают без интернета.
+      Порядок здесь — порядок в приложении.</p>
+    <p class="muted">⚠️ Только свои книги или изданные с письменного разрешения
+      правообладателя. Чужой скан в приложении из App Store — прямой повод
+      снять его с публикации.</p>
+    <p style="margin-top:10px"><button class="primary" id="book-add">Добавить книгу</button></p>
+    ${books.length ? `<table style="margin-top:10px"><thead><tr>
+      <th></th><th>Книга</th><th>Файл</th><th></th></tr></thead><tbody>
+      ${books.map((b, i) => `<tr>
+        <td>${b.cover
+          ? `<img src="${API}/uploads/${encodeURIComponent(b.cover)}" alt=""
+                  style="width:44px;height:62px;object-fit:cover;border-radius:4px">`
+          : ''}</td>
+        <td><b>${esc(b.title)}</b>${b.author ? `<br><span class="muted">${esc(b.author)}</span>` : ''}</td>
+        <td>${esc(b.file)} <span class="muted">${bookSize(b.size)}</span>
+          ${names.has(b.file) ? '' : '<br><span class="tag warn">файла нет на сервере</span>'}</td>
+        <td style="white-space:nowrap">
+          <button data-bkmove="${i}:-1" ${i === 0 ? 'disabled' : ''} title="Выше">↑</button>
+          <button data-bkmove="${i}:1" ${i === books.length - 1 ? 'disabled' : ''} title="Ниже">↓</button>
+          <button data-bkedit="${i}">Изменить</button>
+          <button data-bkdel="${i}">Убрать</button>
+        </td>
+      </tr>`).join('')}</tbody></table>`
+      : '<p class="muted" style="margin-top:10px">Книг пока нет.</p>'}
+  </div>`;
+}
+
+/// Сохраняет каталог целиком. true — сервер принял.
+async function saveBooks(items, okMsg) {
+  const err = await putJson('/books.json', { updated: Date.now(), items });
+  toast(err || okMsg);
+  if (err) return false;
+  state.books = items;
+  return true;
+}
+
+function viewSupport() {
+  const th = state.chatThreads || [];
+  const open = state.chatOpen;
+  if (open) {
+    const msgs = state.chatMessages || [];
+    const who = th.find((t) => t.student === open) || {};
+    return `<div class="card">
+      <p><button id="chat-back">← Ко всем обращениям</button></p>
+      <h2 style="margin:10px 0 2px">${esc(who.name || 'Без имени')}</h2>
+      <p class="muted" style="margin:0 0 12px">${esc(open)}</p>
+      <div id="chat-log" style="max-height:52vh;overflow:auto;padding:4px 2px">
+        ${msgs.length ? msgs.map((m) => {
+          const mine = m.from === 'staff';
+          return `<div style="display:flex;justify-content:${mine ? 'flex-end' : 'flex-start'};margin-bottom:8px">
+            <div style="max-width:72%;padding:9px 13px;border-radius:14px;
+                        background:${mine ? '#1f6f43' : 'rgba(255,255,255,.08)'}">
+              <div style="white-space:pre-wrap">${esc(m.text)}</div>
+              <div class="muted" style="font-size:11px;margin-top:4px">
+                ${mine ? 'поддержка' : 'ученик'} · ${fmtDateTime(m.ts)}</div>
+            </div></div>`;
+        }).join('') : '<p class="muted">Сообщений пока нет.</p>'}
+      </div>
+      <p style="margin-top:12px">
+        <textarea id="chat-text" rows="3" maxlength="2000"
+                  placeholder="Ответ ученику" style="width:100%"></textarea></p>
+      <p><button class="primary" id="chat-send">Ответить</button></p>
+    </div>`;
+  }
+  return `<div class="card">
+    <h2>Обращения в поддержку</h2>
+    <p class="muted">Переписка личная: у каждого ученика своя ветка, видят её
+      только он и вы. Ответ приходит ему прямо в приложение.
+      ⚠️ Уведомления об ответе пока не отправляются — ключ APNs на сервере
+      не настроен, и человек увидит ответ, когда сам откроет приложение.</p>
+    ${th.length ? `<table style="margin-top:10px"><thead><tr>
+      <th>Ученик</th><th>Последнее сообщение</th><th>Когда</th><th></th></tr></thead><tbody>
+      ${th.map((t) => `<tr>
+        <td><b>${esc(t.name || 'Без имени')}</b><br><span class="muted">${esc(t.student)}</span></td>
+        <td>${t.lastFrom === 'staff' ? '<span class="muted">вы: </span>' : ''}${esc(t.lastText)}</td>
+        <td class="muted">${fmtDateTime(t.updated)}</td>
+        <td>${t.unread ? `<span class="tag warn">${t.unread}</span> ` : ''}
+            <button data-chat="${esc(t.student)}">Открыть</button></td>
+      </tr>`).join('')}</tbody></table>`
+      : '<p class="muted">Обращений пока не было.</p>'}
+  </div>`;
+}
+
+
 function viewCrashes() {
   const list = state.crashes;
   if (!list.length) {
@@ -1715,17 +1877,161 @@ function wire() {
     q.oninput = draw;
     draw();
   }
-  // — Контакт для кодов подтверждения
+  // — Книги
+  const bookAdd = $('#book-add');
+  if (bookAdd) bookAdd.onclick = () => {
+    state.bookEdit = { index: -1, book: {
+      id: newBookId(), title: '', author: '', description: '', lang: '',
+      file: '', cover: '', size: 0 } };
+    render();
+  };
+  document.querySelectorAll('[data-bkedit]').forEach((b) => (b.onclick = () => {
+    const i = Number(b.dataset.bkedit);
+    state.bookEdit = { index: i, book: { ...state.books[i] } };
+    render();
+  }));
+  document.querySelectorAll('[data-bkmove]').forEach((b) => (b.onclick = async () => {
+    const [i, d] = b.dataset.bkmove.split(':').map(Number);
+    const j = i + d;
+    if (j < 0 || j >= state.books.length) return;
+    const list = state.books.slice();
+    [list[i], list[j]] = [list[j], list[i]];
+    if (await saveBooks(list, 'Порядок сохранён')) render();
+  }));
+  document.querySelectorAll('[data-bkdel]').forEach((b) => (b.onclick = async () => {
+    const i = Number(b.dataset.bkdel);
+    if (!confirm(`Убрать «${state.books[i].title}» из приложения? `
+      + 'Сам файл останется в разделе «Видео».')) return;
+    if (await saveBooks(state.books.filter((_, k) => k !== i), 'Книга убрана')) {
+      await loadAll();   // у файла пропала пометка «используется»
+      render();
+    }
+  }));
+  const bookCancel = $('#book-cancel');
+  if (bookCancel) bookCancel.onclick = () => { state.bookEdit = null; render(); };
+  const bookSave = $('#book-save');
+  if (bookSave) bookSave.onclick = async () => {
+    const ed = state.bookEdit;
+    const form = {
+      ...ed.book,
+      title: $('#bk-title').value.trim(),
+      author: $('#bk-author').value.trim(),
+      description: $('#bk-desc').value.trim(),
+      lang: $('#bk-lang').value,
+      file: $('#bk-file').value,
+      cover: $('#bk-cover').value,
+    };
+    if (!form.title) { toast('Укажите название книги'); return; }
+    bookSave.disabled = true;
+    const progress = $('#bk-progress');
+    // Загрузка прямо из формы. Имя на сервере может отличаться от исходного
+    // (кириллица → латиница), поэтому файл ищем после загрузки по подписи —
+    // uploadFile ставит подписью исходное имя без расширения.
+    const upload = async (input, label) => {
+      const f = input.files && input.files[0];
+      if (!f) return null;
+      const err = await uploadFile(f, f.name,
+        (p) => { progress.textContent = `${label}: ${Math.round(p * 100)}%`; }, '');
+      if (err) throw new Error(err);
+      await loadAll();
+      const title = f.name.replace(/\.[^.]+$/, '');
+      const hit = state.media.find((m) => m.title === title);
+      if (!hit) throw new Error(`${label} загружен, но не найден в списке файлов`);
+      return hit.name;
+    };
+    try {
+      const pdf = await upload($('#bk-file-up'), 'PDF');
+      if (pdf) form.file = pdf;
+      const cover = await upload($('#bk-cover-up'), 'Обложка');
+      if (cover) form.cover = cover;
+    } catch (e) {
+      toast(e.message);
+      bookSave.disabled = false;
+      return;
+    }
+    progress.textContent = '';
+    if (!/\.pdf$/i.test(form.file)) {
+      toast('Выберите или загрузите файл PDF');
+      bookSave.disabled = false;
+      return;
+    }
+    const m = state.media.find((x) => x.name === form.file);
+    form.size = m ? m.size : (form.size || 0);
+    form.updatedAt = Date.now();
+    const list = state.books.slice();
+    if (ed.index < 0) list.push(form); else list[ed.index] = form;
+    if (await saveBooks(list, 'Книга сохранена')) {
+      state.bookEdit = null;
+      await loadAll();
+      render();
+    } else {
+      bookSave.disabled = false;
+    }
+  };
+
+  // — Переписка с поддержкой
+  document.querySelectorAll('[data-chat]').forEach((b) => (b.onclick = async () => {
+    const student = b.dataset.chat;
+    const d = await postData('/support/thread', { student });
+    state.chatOpen = student;
+    state.chatMessages = (d && d.messages) || [];
+    // Открыли ветку — непрочитанные по ней сброшены сервером; обновим сводку,
+    // иначе счётчик в списке остался бы висеть до перезагрузки панели.
+    const fresh = await postData('/support/threads', {});
+    if (fresh) state.chatThreads = fresh.threads || [];
+    render();
+  }));
+  const chatBack = $('#chat-back');
+  if (chatBack) chatBack.onclick = () => {
+    state.chatOpen = null;
+    state.chatMessages = [];
+    render();
+  };
+  const chatSend = $('#chat-send');
+  if (chatSend) chatSend.onclick = async () => {
+    const text = $('#chat-text').value.trim();
+    if (!text) return;
+    chatSend.disabled = true;
+    const err = await postJson('/support/reply',
+      { student: state.chatOpen, text });
+    toast(err || 'Ответ отправлен');
+    if (!err) {
+      const d = await postData('/support/thread', { student: state.chatOpen });
+      state.chatMessages = (d && d.messages) || [];
+      render();
+    } else {
+      chatSend.disabled = false;
+    }
+  };
+
+  // — Контакты поддержки
   const spSave = $('#sp-save');
   if (spSave) spSave.onclick = async () => {
+    const form = spForm();
+    // Строки без номера просто выбрасываем: пустая строка в списке — это
+    // обычно забытая заготовка, а не намерение показать пустоту в приложении.
     const err = await putJson('/support.json', {
-      whatsapp: $('#sp-wa').value.trim(),
-      telegram: $('#sp-tg').value.trim(),
-      note: $('#sp-note').value.trim(),
+      ...form,
+      phones: form.phones.filter((p) => p.phone),
     });
-    toast(err || 'Контакт сохранён');
+    toast(err || 'Контакты сохранены');
     if (!err) { await loadAll(); render(); }
   };
+  const spAdd = $('#sp-add');
+  if (spAdd) spAdd.onclick = () => {
+    const form = spForm();
+    if (!form) return;
+    if (form.phones.length >= 8) { toast('Больше восьми номеров приложение не покажет'); return; }
+    state.support = { ...form, phones: [...form.phones, { name: '', phone: '' }] };
+    render();
+  };
+  document.querySelectorAll('[data-spdel]').forEach((b) => (b.onclick = () => {
+    const form = spForm();
+    if (!form) return;
+    const i = Number(b.dataset.spdel);
+    state.support = { ...form, phones: form.phones.filter((_, k) => k !== i) };
+    render();
+  }));
   // — Учётки устазов
   const staffAdd = $('#staff-add');
   if (staffAdd) staffAdd.onclick = async () => {

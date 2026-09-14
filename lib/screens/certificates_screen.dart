@@ -22,7 +22,7 @@ class CertificatesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final female = AppScope.of(context).auth?.current?.gender.name == 'female';
+    final female = AppScope.of(context).auth?.current?.gender?.name == 'female';
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(

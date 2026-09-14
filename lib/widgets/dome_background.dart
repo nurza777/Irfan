@@ -6,13 +6,19 @@ import 'package:flutter/material.dart';
 import '../services/visual_effects.dart';
 import '../services/wallpaper_service.dart';
 import '../theme.dart';
+import 'night_sky.dart';
 
-/// Фон приложения: фотография Каабы и часовой башни Мекки с медленным
-/// «кен-бёрнс» приближением, затемнением для читаемости и парящими
-/// золотыми частицами.
+/// Фон приложения: картинка `assets/images/wallpaper.jpg` или фотография,
+/// поставленная пользователем, — с затемнением для читаемости и парящими
+/// золотыми частицами. [NightSky] остаётся запасным вариантом, если
+/// картинка не прочиталась.
 ///
-/// В экономном режиме ([VisualEffects]) фото стоит неподвижно и частиц нет:
-/// фон рисуется на каждом экране приложения, и вечная анимация означает
+/// «Кен-бёрнс» приближение оставлено только для пользовательской фотографии.
+/// Нарисованный фон построен под размер экрана целиком, и приближать его
+/// нечем: масштаб лишь срезал бы минареты по краям.
+///
+/// В экономном режиме ([VisualEffects]) фон стоит неподвижно и частиц нет:
+/// он рисуется на каждом экране приложения, и вечная анимация означает
 /// перерисовку всего экрана 60 раз в секунду даже тогда, когда человек просто
 /// читает.
 class DomeBackground extends StatefulWidget {
@@ -68,31 +74,31 @@ class _DomeBackgroundState extends State<DomeBackground>
 
   @override
   Widget build(BuildContext context) {
-    // Растр обоев не зависит от кадра анимации: под RepaintBoundary движок
-    // рисует фотографию один раз и дальше только двигает готовый слой.
-    final photo = RepaintBoundary(
-      child: ListenableBuilder(
-        listenable: WallpaperService.instance,
-        builder: (context, _) {
-          final custom = WallpaperService.instance.path;
-          if (custom != null) {
-            return Image.file(
+    return ListenableBuilder(
+      listenable: WallpaperService.instance,
+      builder: (context, _) => _build(WallpaperService.instance.path),
+    );
+  }
+
+  Widget _build(String? custom) {
+    // Растр фона не зависит от кадра анимации: под RepaintBoundary движок
+    // рисует его один раз и дальше только двигает готовый слой.
+    final background = RepaintBoundary(
+      child: custom != null
+          ? Image.file(
               File(custom),
               key: ValueKey(custom),
               fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => Image.asset(
-                  'assets/images/wallpaper.jpg',
-                  fit: BoxFit.cover),
-            );
-          }
-          return Image.asset(
-            'assets/images/wallpaper.jpg',
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) =>
-                const ColoredBox(color: AppColors.skyBottom),
-          );
-        },
-      ),
+              // Файл могли удалить из галереи уже после выбора.
+              errorBuilder: (_, _, _) => const NightSky(),
+            )
+          : Image.asset(
+              'assets/images/wallpaper.jpg',
+              fit: BoxFit.cover,
+              // Если картинки в сборке не окажется — рисуем небо кодом,
+              // пустого экрана человек видеть не должен.
+              errorBuilder: (_, _, _) => const NightSky(),
+            ),
     );
 
     final zoom = _zoom;
@@ -101,8 +107,8 @@ class _DomeBackgroundState extends State<DomeBackground>
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (zoom == null)
-          photo
+        if (zoom == null || custom == null)
+          background
         else
           AnimatedBuilder(
             animation: zoom,
@@ -114,7 +120,7 @@ class _DomeBackgroundState extends State<DomeBackground>
                 child: child,
               );
             },
-            child: photo,
+            child: background,
           ),
         // Затемнение сверху (статус-бар) и снизу (контент).
         const DecoratedBox(
@@ -122,13 +128,17 @@ class _DomeBackgroundState extends State<DomeBackground>
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
+              // Верх затемнён сильнее, чем раньше: фон стал светлым (закатное
+              // небо), и на нём терялась самая бледная строка — дата по
+              // хиджре под названием города.
               colors: [
-                Color(0x66000000),
+                Color(0x8C000000),
+                Color(0x40000000),
                 Colors.transparent,
                 Color(0x2E000000),
                 Color(0xA6000000),
               ],
-              stops: [0, 0.22, 0.6, 1],
+              stops: [0, 0.13, 0.3, 0.62, 1],
             ),
           ),
         ),

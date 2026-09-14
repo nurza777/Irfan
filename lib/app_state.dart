@@ -12,11 +12,13 @@ import 'services/auth_service.dart';
 import 'services/home_widget_service.dart';
 import 'services/lang.dart';
 import 'services/notification_service.dart';
+import 'services/push_service.dart';
 import 'services/prayer_service.dart';
 import 'services/private_zikr_service.dart';
 import 'services/quran_service.dart';
 import 'services/settings_service.dart';
 import 'services/shop_service.dart';
+import 'services/support_chat_service.dart';
 import 'services/tracker_service.dart';
 import 'services/wallpaper_service.dart';
 import 'services/user_registry.dart';
@@ -25,7 +27,7 @@ import 'services/zikr_service.dart';
 
 /// Глобальное состояние: локация, времена намаза на сегодня, трекер,
 /// зикры, аккаунт, «сейчас».
-class AppState extends ChangeNotifier {
+class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppLocation location = PrayerService.fallbackLocation;
   DayPrayerTimes? today;
   TrackerService? tracker;
@@ -108,6 +110,26 @@ class AppState extends ChangeNotifier {
     await WatchProgress.instance.init();
     _applyLocationSetting();
     _recompute();
+    // Ответ на вопрос о намазе может прийти из уведомления, пока приложение
+    // открыто: тогда запись делает другой обработчик, и состояние в памяти
+    // о ней не знает — перечитываем хранилище и перерисовываемся.
+    // Пока приложение было в фоне, человек мог ответить прямо в уведомлении —
+    // запись сделал другой изолят, и в памяти лежат устаревшие значения.
+    WidgetsBinding.instance.addObserver(this);
+    NotificationService.onAnswered = () async {
+      await tracker?.reload();
+      _invalidateCoins();
+      notifyListeners();
+      _rescheduleNotifications();
+    };
+    // Токен APNs меняется сам по себе — после переустановки, восстановления
+    // из копии, долгого простоя. Обновляем его при каждом запуске, иначе
+    // сервер продолжал бы слать на мёртвый адрес.
+    if (settings?.liveNotificationsEnabled == true) {
+      unawaited(PushService.enable());
+    }
+    // Ответ поддержки мог прийти, пока приложение было закрыто.
+    unawaited(SupportChatService.refreshUnread(auth?.current?.phone));
     _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
       final prev = now;
       now = DateTime.now();
@@ -135,7 +157,15 @@ class AppState extends ChangeNotifier {
     }
     notifyListeners();
     // Локация — в фоне, чтобы не блокировать первый кадр.
-    _autoLocation = await PrayerService.resolveLocation();
+    //
+    // И только если город НЕ выбран вручную. Раньше геопозицию спрашивали
+    // всегда: человек указывал город руками, а система всё равно показывала
+    // окно «разрешить доступ к геопозиции» — просьба о разрешении, которое
+    // приложению в этот момент не нужно. Для App Store это лишний вопрос
+    // на проверке, а для человека — повод отказать не глядя.
+    if (settings?.locationMode != LocationMode.manual) {
+      _autoLocation = await PrayerService.resolveLocation();
+    }
     _applyLocationSetting();
     _recompute();
     notifyListeners();
@@ -153,7 +183,12 @@ class AppState extends ChangeNotifier {
     final blocked = await UserRegistry.report(u,
         prayersRead: tracker!.totalReadCount(),
         streak: tracker!.currentStreak(),
-        coins: coins);
+        coins: coins,
+        // Очки соревнования считаем БЕЗ потолка и без вычета трат:
+        // в таблице человек не должен опускаться за то, что потратил
+        // заработанное. См. UserRegistry.report.
+        score: prayerCoins + zikrCoins,
+        hideInRating: settings?.hideInRating);
     // Слепок для переноса на другой телефон — после отчёта: сервер должен
     // сначала завести запись, иначе класть слепок будет не к чему.
     // Сам класс решает, изменилось ли что-нибудь и не слишком ли часто.
@@ -166,7 +201,8 @@ class AppState extends ChangeNotifier {
     NotificationService.reschedule(
         settings: settings!,
         location: location,
-        privateZikrs: privateZikrs);
+        privateZikrs: privateZikrs,
+        tracker: tracker);
   }
 
   /// Перепланировать напоминания извне (например, после правки обета).
@@ -192,6 +228,46 @@ class AppState extends ChangeNotifier {
     return value;
   }
 
+  /// Включить/выключить уведомления о начале эфира. Разрешение то же самое,
+  /// что и для азана, поэтому спрашиваем его так же; отличие в том, что
+  /// после согласия нужно ещё подписаться на APNs и отдать токен серверу.
+  Future<bool> setLiveNotificationsEnabled(bool value) async {
+    if (value) {
+      final granted = await NotificationService.requestPermission();
+      if (!granted) {
+        await settings!.setLiveNotificationsEnabled(false);
+        notifyListeners();
+        return false;
+      }
+      await PushService.enable();
+    }
+    await settings!.setLiveNotificationsEnabled(value);
+    notifyListeners();
+    return value;
+  }
+
+  /// Спрашивать ли после намаза «прочитали?». Разрешение то же, что у азана.
+  Future<bool> setAskEnabled(bool value) async {
+    if (value) {
+      final granted = await NotificationService.requestPermission();
+      if (!granted) {
+        await settings!.setAskEnabled(false);
+        notifyListeners();
+        return false;
+      }
+    }
+    await settings!.setAskEnabled(value);
+    _rescheduleNotifications();
+    notifyListeners();
+    return value;
+  }
+
+  Future<void> setAskDelayMinutes(int minutes) async {
+    await settings!.setAskDelayMinutes(minutes);
+    _rescheduleNotifications();
+    notifyListeners();
+  }
+
   Future<void> setNotifyBeforeMinutes(int minutes) async {
     await settings!.setNotifyBeforeMinutes(minutes);
     _rescheduleNotifications();
@@ -203,6 +279,24 @@ class AppState extends ChangeNotifier {
     _rescheduleNotifications();
     notifyListeners();
   }
+
+  /// Прятать ли себя из общей таблицы соревнования. Сразу отправляем
+  /// на сервер: иначе человек снял бы галочку и остался в таблице до
+  /// следующего запуска приложения.
+  Future<void> setHideInRating(bool v) async {
+    await settings!.setHideInRating(v);
+    notifyListeners();
+    unawaited(_reportActivity());
+  }
+
+  /// Показывает проверочный вопрос о намазе через пять секунд.
+  ///
+  /// Нужен потому, что кнопки «Да»/«Нет» живут в системном слое: их не
+  /// покрыть тестами, а сломаться они могут молча — так и случилось, когда
+  /// в изоляте действий не оказалось плагинов, и ответ не доходил до
+  /// трекера. Проверка занимает полминуты вместо ожидания времени намаза.
+  Future<void> sendAskTest() =>
+      NotificationService.showAskDemo(settings!, PrayerKey.fajr);
 
   Future<void> setLanguage(Lang l) async {
     await settings!.setLang(l);
@@ -235,10 +329,33 @@ class AppState extends ChangeNotifier {
     return (PrayerKey.fajr, tomorrow[PrayerKey.fajr]);
   }
 
+  /// Меняет отметку намаза за ЛЮБОЙ день — им пользуется экран
+  /// восстановления пропущенных. [markPrayer] пишет только сегодняшний день
+  /// и потому здесь не подходит.
+  Future<void> setPrayerStatusOn(
+      DateTime day, PrayerKey key, PrayerStatus status) async {
+    await tracker!.setStatus(day, key, status);
+    _invalidateCoins();
+    notifyListeners();
+    // Уведомления пересобираем только если тронули сегодняшний день: за
+    // прошлые дни ничего не запланировано, а перепланирование шестидесяти
+    // уведомлений на каждое нажатие в длинном списке — заметная задержка.
+    final t = today;
+    if (t != null &&
+        TrackerService.dayKeyOf(day) == TrackerService.dayKeyOf(t.date)) {
+      _rescheduleNotifications();
+    }
+    final phone = auth?.current?.phone;
+    if (phone != null) unawaited(AccountBackup.maybeUpload(phone));
+  }
+
   Future<void> markPrayer(PrayerKey key, PrayerStatus status) async {
     await tracker!.setStatus(today!.date, key, status);
     _invalidateCoins();
     notifyListeners();
+    // Пересобираем уведомления: вопрос об этом намазе больше не нужен,
+    // а он уже стоит в очереди системы.
+    _rescheduleNotifications();
     // Отметка намаза — то самое, что обиднее всего терять вместе с телефоном.
     // Слепок уходит не чаще раза в четверть часа, см. AccountBackup.
     final phone = auth?.current?.phone;
@@ -310,7 +427,7 @@ class AppState extends ChangeNotifier {
     required String name,
     required String phone,
     required String password,
-    required int age,
+    required DateTime? birthDate,
     required Gender? gender,
     String city = '',
   }) async {
@@ -318,7 +435,7 @@ class AppState extends ChangeNotifier {
         name: name,
         phone: phone,
         password: password,
-        age: age,
+        birthDate: birthDate,
         gender: gender,
         city: city);
     // Сообщаем профиль на сервер, чтобы админ видел новый аккаунт (без пароля).
@@ -329,13 +446,27 @@ class AppState extends ChangeNotifier {
     return err;
   }
 
-  Future<void> updateProfile({int? age, Gender? gender}) async {
-    await auth!.updateCurrentProfile(age: age, gender: gender);
+  Future<void> updateProfile({DateTime? birthDate, Gender? gender}) async {
+    await auth!.updateCurrentProfile(birthDate: birthDate, gender: gender);
     notifyListeners();
   }
 
+  /// Вход по номеру и паролю.
+  ///
+  /// Аккаунт живёт на телефоне, но человек мог прийти с другого — купил
+  /// новый, переустановил систему, потерял прежний. Тогда локальной записи
+  /// нет, и аккаунт забирается с сервера тем же паролем.
+  ///
+  /// Раньше для этого надо было отдельно открыть «Восстановить аккаунт» и
+  /// ждать кода, который устаз называет вручную: автоотправки нет, и человек
+  /// упирался в ожидание. Теперь вход — один и тот же путь везде.
   Future<String?> loginAccount(
       {required String phone, required String password}) async {
+    if (!auth!.hasLocal(phone)) {
+      final err = await _signInFromServer(phone: phone, password: password);
+      notifyListeners();
+      return err;
+    }
     final err = await auth!.login(phone: phone, password: password);
     if (err == null && auth!.current != null) {
       // Отмечаемся на сервере (профиль + активность) и проверяем блокировку.
@@ -350,6 +481,32 @@ class AppState extends ChangeNotifier {
     }
     notifyListeners();
     return err;
+  }
+
+  /// Забирает аккаунт с сервера по номеру и паролю и входит в него.
+  /// null — успех, иначе текст ошибки.
+  Future<String?> _signInFromServer(
+      {required String phone, required String password}) async {
+    final ph = normalizePhone(phone);
+    if (ph.isEmpty) return t('Некорректный номер телефона');
+    if (password.length < 6) return t('Пароль — минимум 6 символов');
+    // Доказательство считается из пароля и номера — то же самое значение,
+    // что телефон-владелец уже прислал серверу. Сам пароль никуда не идёт.
+    final proof = await AuthService.makeProof(ph, password);
+    final r = await AccountRestore.fetch(ph, pass: proof);
+    return switch (r.status) {
+      RestoreStatus.ok =>
+        await restoreAccount(r, phone: ph, password: password),
+      RestoreStatus.notFound => t('Аккаунт не найден'),
+      RestoreStatus.badPassword => t('Неверный пароль'),
+      RestoreStatus.blocked => t('Аккаунт заблокирован администратором'),
+      // Сервер не принял ни пароль, ни разрешение. Случай редкий: запись
+      // закрыта паролем, а приложение его не отправило.
+      RestoreStatus.needsCode =>
+        t('Не удалось войти — обратитесь в поддержку'),
+      RestoreStatus.offline => t('Нет связи с сервером — попробуйте позже'),
+      RestoreStatus.error => t('Не удалось войти'),
+    };
   }
 
   /// Переносит аккаунт на это устройство: кладёт слепок в хранилище, заводит
@@ -372,7 +529,12 @@ class AppState extends ChangeNotifier {
       password: password,
       createdAt: r.createdAt ?? DateTime.now(),
       age: r.age,
-      gender: r.gender == 'female' ? Gender.female : Gender.male,
+      birthDate: r.birthDate,
+      // Пол теперь необязателен: пустое значение НЕ превращаем в мужской,
+      // иначе перенос аккаунта дописывал бы человеку то, чего он не указывал.
+      gender: r.gender == 'female'
+          ? Gender.female
+          : (r.gender == 'male' ? Gender.male : null),
       city: r.city,
     );
     if (err != null) return err;
@@ -396,6 +558,33 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     return null;
   }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _refreshAfterBackground();
+  }
+
+  Future<void> _refreshAfterBackground() async {
+    await tracker?.reload();
+    _recompute();
+    _invalidateCoins();
+    notifyListeners();
+    // Отметки могли измениться — значит и набор вопросов другой.
+    _rescheduleNotifications();
+    // Пока телефон лежал в кармане, админ мог выдать доступ к курсам.
+    // Без этого запроса человек узнавал бы о нём только после того, как
+    // выгрузит приложение из памяти и запустит заново, — а он этого,
+    // разумеется, не делает и считает, что доступ не выдали.
+    unawaited(_reportActivity());
+    unawaited(SupportChatService.refreshUnread(auth?.current?.phone));
+  }
+
+  /// Перезапрашивает профиль и доступы у сервера.
+  ///
+  /// Открыто для экранов: страница курсов зовёт это при каждом обновлении,
+  /// чтобы свежевыданный доступ появлялся по кнопке, а не после перезапуска.
+  Future<void> refreshAccess() => _reportActivity();
 
   Future<void> logoutAccount() async {
     await auth!.logout();
@@ -429,6 +618,8 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    NotificationService.onAnswered = null;
     _ticker?.cancel();
     clock.dispose();
     super.dispose();

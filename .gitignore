@@ -49,6 +49,9 @@ android/key.properties
 *.jks
 *.keystore
 
+# Копии проекта Xcode, которые оставляют скрипты правки pbxproj.
+*.pbxproj.bak
+
 # Резервные копии, вытянутые с сервера (в них секреты).
 irfan-backups/
 

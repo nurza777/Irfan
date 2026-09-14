@@ -9,6 +9,7 @@ import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/glass.dart';
 import 'period_stats_screen.dart';
+import 'restore_prayers_screen.dart';
 
 /// Трекер намаза: отметки за сегодня + статистика за неделю.
 class TrackerPage extends StatelessWidget {
@@ -22,11 +23,24 @@ class TrackerPage extends StatelessWidget {
     final hhmm = DateFormat('HH:mm');
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      // На узких и НИЗКИХ экранах (iPhone SE — 667 точек в высоту) всё это
+      // не помещается: карточки серии, пяти намазов, восстановления и
+      // недельной полосы дают около 830 точек. Столбец переполнялся снизу
+      // на 165 точек — полосатой лентой поверх экрана.
+      //
+      // Прокрутка с минимальной высотой во весь экран: на высоком телефоне
+      // ничего не меняется, Spacer по-прежнему прижимает подсказку к низу;
+      // на низком — страница просто листается.
+      child: LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: box.maxHeight),
+            child: IntrinsicHeight(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
             const SizedBox(height: 16),
             FadeSlideIn(
               offset: const Offset(-24, 0),
@@ -132,6 +146,39 @@ class TrackerPage extends StatelessWidget {
                 child: _WeekStrip(tracker: tracker, now: state.now),
               ),
             ),
+            const SizedBox(height: 12),
+            // Строка стоит ВСЕГДА, а не только при наличии пропусков: скрытую
+            // человек не находит и не знает, что восстановление вообще есть.
+            // Сколько пропущено — сразу в подписи, чтобы не открывать зря.
+            FadeSlideIn(
+              delay: const Duration(milliseconds: 400),
+              child: GlassCard(
+                radius: 20,
+                child: Builder(builder: (context) {
+                  final n = tracker.missedPrayers().length;
+                  return ListTile(
+                    leading: Icon(Icons.history,
+                        color: n > 0 ? AppColors.gold : Colors.white54),
+                    title: Text(t('Восстановить намазы'),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: Text(
+                        n > 0
+                            ? '${t('Пропущено')}: $n'
+                            : t('Пропущенных намазов нет'),
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.white.withValues(alpha: 0.6))),
+                    trailing: const Icon(Icons.chevron_right,
+                        color: Colors.white54),
+                    onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const RestorePrayersScreen())),
+                  );
+                }),
+              ),
+            ),
             const Spacer(),
             Center(
               child: FadeSlideIn(
@@ -152,8 +199,12 @@ class TrackerPage extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 14),
-          ],
+                    const SizedBox(height: 14),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );

@@ -51,6 +51,10 @@ class SettingsService {
   static const _madhabKey = 'settings_madhab';
   static const _methodKey = 'settings_method';
   static const _notifyKey = 'settings_notify';
+  static const _liveNotifyKey = 'settings_notify_live';
+  static const _hideRatingKey = 'hide_in_rating';
+  static const _askKey = 'settings_ask_prayer';
+  static const _askDelayKey = 'settings_ask_delay';
   static const _notifyBeforeKey = 'settings_notify_before';
   static const _notifyPrayersKey = 'settings_notify_prayers';
   static const _langKey = 'settings_lang';
@@ -210,6 +214,33 @@ class SettingsService {
 
   bool get notificationsEnabled => _prefs.getBool(_notifyKey) ?? false;
 
+  /// Уведомлять ли о начале прямого эфира. Отдельно от азана: эфир идёт
+  /// изредка и в разное время, и человек вправе хотеть одно без другого.
+  bool get liveNotificationsEnabled =>
+      _prefs.getBool(_liveNotifyKey) ?? false;
+
+  /// Спрашивать ли после намаза «прочитали?» — уведомлением с кнопками
+  /// «Да» и «Нет», чтобы отметить, не открывая приложение.
+  bool get askEnabled => _prefs.getBool(_askKey) ?? true;
+
+  /// Прятать ли себя из общей таблицы соревнования.
+  ///
+  /// По умолчанию человек в таблице виден — иначе она была бы пустой и
+  /// бессмысленной. Но показывается только имя: ни номера, ни города, ни
+  /// возраста сервер в таблицу не отдаёт. Кто не хочет быть на виду, может
+  /// скрыться и продолжать соревноваться: своё место он видит по-прежнему,
+  /// просто его строки не видно остальным.
+  bool get hideInRating => _prefs.getBool(_hideRatingKey) ?? false;
+  Future<void> setHideInRating(bool v) =>
+      _prefs.setBool(_hideRatingKey, v);
+
+  /// Через сколько минут после времени намаза спрашивать. Раньше было
+  /// жёстко 10; людям нужно по-разному — кто-то читает сразу, кто-то
+  /// через полчаса, и вопрос до намаза только раздражает.
+  int get askDelayMinutes => _prefs.getInt(_askDelayKey) ?? 20;
+
+  Duration get askDelay => Duration(minutes: askDelayMinutes);
+
   /// За сколько минут до намаза напоминать (0 — точно во время намаза).
   int get notifyBeforeMinutes => _prefs.getInt(_notifyBeforeKey) ?? 0;
 
@@ -224,6 +255,14 @@ class SettingsService {
 
   Future<void> setNotificationsEnabled(bool v) =>
       _prefs.setBool(_notifyKey, v);
+
+  Future<void> setLiveNotificationsEnabled(bool v) =>
+      _prefs.setBool(_liveNotifyKey, v);
+
+  Future<void> setAskEnabled(bool v) => _prefs.setBool(_askKey, v);
+
+  Future<void> setAskDelayMinutes(int v) =>
+      _prefs.setInt(_askDelayKey, v.clamp(5, 180));
   Future<void> setNotifyBeforeMinutes(int v) =>
       _prefs.setInt(_notifyBeforeKey, v.clamp(0, 60));
   Future<void> setNotifyPrayers(Set<PrayerKey> p) => _prefs.setStringList(

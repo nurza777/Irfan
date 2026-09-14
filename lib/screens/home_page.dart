@@ -9,6 +9,7 @@ import '../services/lang.dart';
 import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
 import '../services/certificate_service.dart';
+import '../services/support_chat_service.dart';
 import '../services/tracker_service.dart';
 import '../services/visual_effects.dart';
 import '../theme.dart';
@@ -17,6 +18,7 @@ import '../widgets/glass.dart';
 import '../widgets/prayer_times_card.dart';
 import 'account_screen.dart';
 import 'azkar_screen.dart';
+import 'books_screen.dart';
 import 'certificates_screen.dart';
 import 'courses_page.dart';
 import 'live_screen.dart';
@@ -285,7 +287,8 @@ class _TrackerQuestionBanner extends StatelessWidget {
     // не о чем: отметка всё равно никуда не запишется.
     if (!AccountGate.isOpen(context)) return const SizedBox.shrink();
     final female = state.auth?.current?.gender == Gender.female;
-    final due = state.tracker!.dueQuestion(state.today!, state.now);
+    final due = state.tracker!.dueQuestion(state.today!, state.now,
+        delay: state.settings!.askDelay);
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 400),
@@ -539,6 +542,15 @@ void showMoreSheet(
                         MaterialPageRoute(builder: (_) => const NewsScreen())),
                   ),
                   _MenuTile(
+                    icon: Icons.local_library_outlined,
+                    title: 'Книги',
+                    subtitle: 'Библиотека для чтения',
+                    sheet: ctx,
+                    free: true,
+                    open: (c) => Navigator.push(c,
+                        MaterialPageRoute(builder: (_) => const BooksScreen())),
+                  ),
+                  _MenuTile(
                     icon: Icons.explore_outlined,
                     title: 'Кибла',
                     subtitle: 'Компас направления на Мекку',
@@ -587,6 +599,9 @@ void showMoreSheet(
                     subtitle: 'Локация, мазхаб, зикры',
                     sheet: ctx,
                     free: true,
+                    // Ответы поддержки живут в настройках — туда и ведёт
+                    // счётчик, пока пушей об ответе нет.
+                    badge: SupportChatService.unreadCount.value,
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(
                             builder: (_) => const SettingsScreen())),

@@ -73,10 +73,19 @@ def check(name, cond, detail=''):
         print(f'  FAIL {name} {detail}')
 
 
-def profile(secret, phone=PHONE, name='Ученик'):
-    return call('POST', '/users', {'phone': phone, 'name': name, 'age': 30,
-                                   'city': 'Бишкек', 'createdAt': CREATED,
-                                   'secret': secret})
+def profile(secret, phone=PHONE, name='Ученик', pw=None):
+    body = {'phone': phone, 'name': name, 'age': 30,
+            'city': 'Бишкек', 'createdAt': CREATED, 'secret': secret}
+    if pw is not None:
+        body['pass'] = pw
+    return call('POST', '/users', body)
+
+
+# Доказательство пароля: приложение считает PBKDF2 от пароля с солью из
+# номера и шлёт шестнадцатеричную строку. Здесь важна не сама функция, а
+# то, что значение одинаково с любого телефона, — берём просто хеш.
+def proof(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def fresh_ticket(phone=PHONE):
@@ -112,10 +121,13 @@ check('слишком большой слепок отвергнут', c == 413,
 
 print('== слепок не раздаётся по HTTP ==')
 name = hashlib.sha256(('irfan-snap:' + FULL).encode()).hexdigest()[:32]
+# 401 наравне с 404: сервер закрывает паролем всякий .json, не объявленный
+# открытым, и до поиска файла дело не доходит. Проверяем суть — слепок не
+# отдаётся, — а не конкретный код отказа.
 c, _ = call('GET', f'/snapshots/{name}.json')
-check('прямая ссылка на слепок не открывается', c == 404, c)
+check('прямая ссылка на слепок не открывается', c in (401, 403, 404), c)
 c, _ = call('GET', f'/../snapshots/{name}.json')
-check('и через выход из каталога тоже', c in (400, 403, 404), c)
+check('и через выход из каталога тоже', c in (400, 401, 403, 404), c)
 
 print('== тот же телефон после переустановки: код не нужен ==')
 c, b = call('POST', '/account/restore', {'phone': PHONE, 'secret': MINE})
@@ -189,6 +201,82 @@ c, b = profile(MINE, name='Третий')
 check('номер заводится снова', c == 201, (c, b))
 c, b = call('POST', '/account/restore', {'phone': PHONE, 'secret': MINE})
 check('слепка не осталось', c == 200 and b.get('data') is None, (c, b))
+
+print('== вход на новом телефоне по номеру и паролю ==')
+#
+# Это главный путь внутрь: кода подтверждения в приложении больше нет.
+PW_PHONE = '0777111222'
+GOOD, BAD = proof('pravilnyi'), proof('nepravilnyi')
+
+c, b = profile(MINE, phone=PW_PHONE, name='С паролем', pw=GOOD)
+check('запись завелась с паролем', c == 201, (c, b))
+check('хеш пароля наружу не отдаётся', 'pw' not in (b or {}), b)
+
+c, b = call('POST', '/backup',
+            {'phone': PW_PHONE, 'secret': MINE, 'data': SNAP})
+check('слепок сохранён', c == 201, (c, b))
+
+c, b = call('POST', '/account/restore',
+            {'phone': PW_PHONE, 'secret': NEW, 'pass': BAD})
+check('неверный пароль не пускает', c == 403
+      and (b or {}).get('error') == 'bad password', (c, b))
+
+c, b = call('POST', '/account/restore', {'phone': PW_PHONE, 'secret': NEW})
+check('без пароля и разрешения не пускает', c == 403, (c, b))
+
+c, b = call('POST', '/account/restore',
+            {'phone': PW_PHONE, 'secret': NEW, 'pass': GOOD})
+check('верный пароль пускает с нового телефона', c == 200, (c, b))
+check('история приехала',
+      len(((b or {}).get('data') or {}).get('s') or {}) == 2, b)
+
+c, b = profile(MINE, phone=PW_PHONE, name='Старый', pw=GOOD)
+check('прежний телефон потерял запись', c == 403, (c, b))
+
+print('== пароль можно сменить со своего телефона ==')
+NEWPW = proof('drugoi')
+c, b = profile(NEW, phone=PW_PHONE, name='С паролем', pw=NEWPW)
+check('владелец прислал новый пароль', c == 201, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': PW_PHONE, 'secret': THIRD, 'pass': GOOD})
+check('прежний пароль больше не подходит', c == 403, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': PW_PHONE, 'secret': THIRD, 'pass': NEWPW})
+check('новый подходит', c == 200, (c, b))
+
+print('== запись без пароля достаётся первому паролю ==')
+#
+# Так выглядят аккаунты, заведённые прежними сборками: пароля на сервере у
+# них нет. Отказать нельзя — человек остался бы без своей истории.
+OLD_PHONE = '0777333444'
+c, b = profile(MINE, phone=OLD_PHONE, name='Старая запись')
+check('запись без пароля завелась', c == 201, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': OLD_PHONE, 'secret': NEW, 'pass': GOOD})
+check('первый присланный пароль пускает', c == 200, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': OLD_PHONE, 'secret': THIRD, 'pass': BAD})
+check('и с этой минуты запись закрыта им', c == 403, (c, b))
+
+print('== админ сбрасывает забытый пароль ==')
+c, b = call('POST', '/users/resetpass', {'phone': OLD_PHONE}, ADMIN)
+check('сброс прошёл', c == 200 and (b or {}).get('reset'), (c, b))
+c, b = call('POST', '/users/resetpass', {'phone': OLD_PHONE})
+check('без прав не сбросить', c in (401, 403), (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': OLD_PHONE, 'secret': THIRD, 'pass': BAD})
+check('после сброса заходит любой пароль', c == 200, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': OLD_PHONE, 'secret': NEW, 'pass': GOOD})
+check('и он же становится новым', c == 403, (c, b))
+
+print('== мусор вместо пароля не записывается ==')
+JUNK_PHONE = '0777555666'
+c, b = profile(MINE, phone=JUNK_PHONE, name='Мусор', pw='не-шестнадцатеричное')
+check('запись завелась', c == 201, (c, b))
+c, b = call('POST', '/account/restore',
+            {'phone': JUNK_PHONE, 'secret': NEW, 'pass': 'zzzz'})
+check('мусорное доказательство не считается паролем', c == 403, (c, b))
 
 print('== код подтверждения живёт час ==')
 call('POST', '/verify/request', {'phone': '0700999888'})

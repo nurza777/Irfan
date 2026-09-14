@@ -4,7 +4,7 @@
 #
 #   bash enable-stream-auth.sh
 #
-# Зачем: путь потока `live/<ключ-эфира>` был константой в сборке приложения
+# Зачем: путь потока `live/<ключ>` был константой в сборке приложения
 # устаза, а MediaMTX пускал публиковать кого угодно. В приложении из App Store
 # так нельзя — строку вытащат из бинарника и вклинятся в эфир. Теперь:
 #   * публиковать может только учётка `publisher` со случайным паролем;
@@ -47,7 +47,17 @@ YML
   python3 - "$PUBPASS" "$STREAM" "$HOST_IP" <<'PY'
 import json, os, sys
 pw, path, ip = sys.argv[1], sys.argv[2], sys.argv[3]
-cfg = {'rtmpUrl': f'rtmp://{ip}/live', 'key': '<ключ-эфира>',
+# Ключ потока в скрипт не пишем — репозиторий публичный. Берём прежний из
+# stream.json (на него уже ссылается mediamtx.yml) или из STREAM_KEY.
+try:
+    with open(path, encoding='utf-8') as f:
+        key = (json.load(f) or {}).get('key', '')
+except (OSError, ValueError):
+    key = ''
+key = os.environ.get('STREAM_KEY') or key
+if not key:
+    sys.exit('Нет ключа потока: задайте STREAM_KEY (тот, что в mediamtx.yml)')
+cfg = {'rtmpUrl': f'rtmp://{ip}/live', 'key': key,
        'user': 'publisher', 'pass': pw}
 os.makedirs(os.path.dirname(path), exist_ok=True)
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

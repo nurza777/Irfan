@@ -59,6 +59,12 @@ android {
             // --release` работал. Для магазина нужен key.properties.
             signingConfig = signingConfigs.getByName(
                 if (hasReleaseKey) "release" else "debug")
+            // Без своих правил R8 выбрасывал обобщённые подписи, и плагин
+            // уведомлений падал на каждой перепланировке — см. комментарий
+            // в самом proguard-rules.pro.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                file("proguard-rules.pro"))
         }
     }
 }

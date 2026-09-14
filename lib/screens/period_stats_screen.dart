@@ -208,6 +208,13 @@ class _PeriodStatsScreenState extends State<PeriodStatsScreen> {
                       color: Colors.redAccent,
                       icon: Icons.cancel,
                     ),
+                    const SizedBox(width: 12),
+                    _StatTile(
+                      value: '${stats.restored}',
+                      label: t('восстановлено'),
+                      color: AppColors.goldLight,
+                      icon: Icons.history,
+                    ),
                   ],
                 ),
               ),
@@ -363,11 +370,20 @@ class _StatTile extends StatelessWidget {
                 style: const TextStyle(
                     fontSize: 26, fontWeight: FontWeight.w800)),
             const SizedBox(height: 2),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 13,
-                    height: 1.2,
-                    color: Colors.white.withValues(alpha: 0.7))),
+            // Подпись держим в одну строку. Плиток стало три, и «восстановлено»
+            // переносилось на второй ряд: у соседних плиток подпись оставалась
+            // однострочной, и числа переставали стоять на одном уровне.
+            // Уменьшить буквы здесь честнее, чем сокращать слово.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(label,
+                  maxLines: 1,
+                  style: TextStyle(
+                      fontSize: 13,
+                      height: 1.2,
+                      color: Colors.white.withValues(alpha: 0.7))),
+            ),
           ],
         ),
       ),

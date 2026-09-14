@@ -102,6 +102,35 @@ class ShopScreen extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 18, fontWeight: FontWeight.w700)),
               const SizedBox(height: 12),
+              // Список наград сейчас пуст (см. shopItems). Пустой раздел без
+              // объяснения выглядит поломкой, поэтому говорим прямо: коины
+              // копятся, награды появятся.
+              if (shopItems.isEmpty)
+                FadeSlideIn(
+                  child: GlassCard(
+                    radius: 18,
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.hourglass_empty,
+                            color: AppColors.goldLight, size: 20),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            t('Награды скоро появятся. Коины за намазы '
+                                'продолжают копиться — они никуда не денутся.'),
+                            style: TextStyle(
+                                fontSize: 13.5,
+                                height: 1.35,
+                                color:
+                                    Colors.white.withValues(alpha: 0.75)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               for (var i = 0; i < shopItems.length; i++)
                 _ShopCard(
                   item: shopItems[i],

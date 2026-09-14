@@ -1,4 +1,5 @@
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/gestures.dart' show TapGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:quran/quran.dart' as quran;
 
@@ -508,6 +509,80 @@ class _PageModeState extends State<_PageMode> {
   late final PageController _controller;
   late int _index;
 
+  /// Чтобы переход к следующей суре не сработал дважды: `onPageChanged`
+  /// зовётся и при мелких доводках положения страницы.
+  bool _leaving = false;
+
+  /// Страницу листает не человек, а само приложение — вслед за чтением.
+  bool _programmatic = false;
+
+  /// Распознаватели тапа по аятам — по одному на аят, живут с экраном.
+  /// Создавать их в каждой перерисовке нельзя: распознаватель надо
+  /// освобождать, а спаны о своих не заботятся.
+  final Map<int, TapGestureRecognizer> _taps = {};
+
+  /// Есть ли следующая сура. У 114-й её нет, и лишней страницы «дальше»
+  /// в конце не будет — листание просто упирается в последнюю страницу.
+  bool get _hasNext => widget.surah < quran.totalSurahCount;
+
+  /// Переход к следующей суре — со страницы-перехода после последней.
+  ///
+  /// Раньше переход срабатывал, стоило ДОЙТИ до последней страницы: на её
+  /// чтение оставалось полсекунды, а у сур в одну страницу перехода не было
+  /// вовсе (страница не менялась — нечему было сработать). Теперь последняя
+  /// страница читается спокойно, а переход — отдельный свайп за неё.
+  ///
+  /// Пауза нужна, чтобы человек увидел, куда долистал, и успел вернуться.
+  /// Экран ЗАМЕНЯЕМ, а не кладём поверх: иначе «назад» уводило бы через всю
+  /// прочитанную цепочку сур обратно к самой первой.
+  void _goNextSurah() {
+    if (_leaving || !_hasNext) return;
+    final next = widget.surah + 1;
+    _leaving = true;
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      // За паузу успели свайпнуть обратно — остаёмся в этой суре.
+      if (_controller.hasClients &&
+          (_controller.page ?? 0).round() != _pages.length) {
+        _leaving = false;
+        return;
+      }
+      Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => SurahScreen(surah: next)));
+    });
+  }
+
+  TapGestureRecognizer _tapFor(int verse) =>
+      _taps.putIfAbsent(verse, () => TapGestureRecognizer())
+        ..onTap = () => _showVerse(verse);
+
+  /// Тап по аяту на странице: перевод именно этого аята и действия с ним.
+  ///
+  /// Перевод под страницей есть и так (по переключателю в настройках), но
+  /// там он — сплошным блоком после всей вязи, и найти нужный аят в нём
+  /// приходится по номеру. Тап отвечает на вопрос «а что значит вот это»
+  /// прямо там, где человек читает, — и работает, даже когда перевод под
+  /// страницей выключен, чтобы лист оставался чистым.
+  void _showVerse(int verse) {
+    final qs = widget.qs;
+    qs.ensureTranslationLoaded(qs.translation);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _VerseSheet(
+        surah: widget.surah,
+        verse: verse,
+        qs: qs,
+        onListen: () {
+          Navigator.pop(ctx);
+          widget.onToggleAudio(verse);
+        },
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -520,6 +595,9 @@ class _PageModeState extends State<_PageMode> {
   @override
   void dispose() {
     _controller.dispose();
+    for (final r in _taps.values) {
+      r.dispose();
+    }
     super.dispose();
   }
 
@@ -531,9 +609,15 @@ class _PageModeState extends State<_PageMode> {
     if (pv != null && pv != old.playingVerse) {
       final target = _pageIndexForVerse(pv);
       if (target != _index && _controller.hasClients) {
-        _controller.animateToPage(target,
-            duration: const Duration(milliseconds: 450),
-            curve: Curves.easeInOutCubic);
+        // Отмечаем, что листаем сами. Иначе последняя страница суры,
+        // до которой добралось чтение вслух, уводила бы человека в
+        // следующую суру прямо посреди прослушивания.
+        _programmatic = true;
+        _controller
+            .animateToPage(target,
+                duration: const Duration(milliseconds: 450),
+                curve: Curves.easeInOutCubic)
+            .whenComplete(() => _programmatic = false);
       }
     }
   }
@@ -586,9 +670,23 @@ class _PageModeState extends State<_PageMode> {
         Expanded(
           child: PageView.builder(
             controller: _controller,
-            itemCount: _pages.length,
-            onPageChanged: (i) => setState(() => _index = i),
+            // Листаем справа налево, как настоящий мусхаф: следующая
+            // страница приходит слева. Порядок самих страниц при этом не
+            // меняется — переворачивается только жест.
+            reverse: true,
+            // Лишний лист в конце — переход к следующей суре (см. _goNextSurah).
+            itemCount: _pages.length + (_hasNext ? 1 : 0),
+            onPageChanged: (i) {
+              if (i >= _pages.length) {
+                if (!_programmatic) _goNextSurah();
+                return;   // панель внизу остаётся на последней странице
+              }
+              setState(() => _index = i);
+            },
             itemBuilder: (context, i) {
+              if (i >= _pages.length) {
+                return _NextSurahPage(next: widget.surah + 1);
+              }
               final p = _pages[i];
               final pNote = _anchorVerse(p) != null
                   ? qs.noteOf(widget.surah, _anchorVerse(p)!)
@@ -608,6 +706,20 @@ class _PageModeState extends State<_PageMode> {
                         textDirection: TextDirection.rtl,
                         textAlign: TextAlign.justify,
                       ),
+                      // Перевод под страницей.
+                      //
+                      // Раньше его тут не было вовсе: страница задумывалась
+                      // как лист мусхафа, сплошным арабским. Но человеку,
+                      // который не читает по-арабски, такая страница
+                      // бесполезна — а переключаться ради перевода в другой
+                      // режим значит терять место в чтении.
+                      //
+                      // Порядок «сначала весь арабский, потом переводы по
+                      // аятам» взят у печатных изданий с подстрочником:
+                      // лист остаётся цельным, перевод не разрывает вязь.
+                      // Показывается по тому же переключателю, что и в
+                      // режиме суры, — выключается там же.
+                      if (display.translation) ..._pageTranslation(p, qs),
                       if (pNote != null && pNote.isNotEmpty) ...[
                         const SizedBox(height: 18),
                         _MarginNote(text: pNote),
@@ -643,6 +755,57 @@ class _PageModeState extends State<_PageMode> {
 
   /// Спаны страницы поаятно (только аяты текущей суры); звучащий сейчас
   /// аят подсвечивается золотым фоном.
+  /// Номера аятов текущей суры, попавших на эту страницу.
+  List<int> _pageVerses(int page) {
+    final out = <int>[];
+    for (final data in quran.getPageData(page)) {
+      if (data['surah'] != widget.surah) continue;
+      for (int v = data['start']; v <= data['end']; v++) {
+        out.add(v);
+      }
+    }
+    return out;
+  }
+
+  /// Блок перевода под страницей: номер аята и его перевод.
+  List<Widget> _pageTranslation(int page, QuranService qs) {
+    final verses = _pageVerses(page);
+    if (verses.isEmpty) return const [];
+    // Цвета — чернила по бумаге, как у самой вязи. Раньше перевод был
+    // белым, как на тёмных карточках режима суры, и на светлом листе
+    // мусхафа его почти не было видно.
+    if (!qs.translationReady) {
+      return [
+        const SizedBox(height: 18),
+        Text(t('Загрузка перевода…'),
+            style: const TextStyle(
+                fontSize: 14,
+                fontStyle: FontStyle.italic,
+                color: AppColors.inkSoft)),
+      ];
+    }
+    return [
+      const SizedBox(height: 18),
+      Divider(
+          color: AppColors.paperEdge.withValues(alpha: 0.6), height: 1),
+      const SizedBox(height: 14),
+      for (final v in verses) ...[
+        Text.rich(
+          TextSpan(children: [
+            TextSpan(
+                text: '$v. ',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, color: AppColors.paperEdge)),
+            TextSpan(text: qs.translationOf(widget.surah, v)),
+          ]),
+          style: const TextStyle(
+              fontSize: 15, height: 1.5, color: AppColors.ink),
+        ),
+        const SizedBox(height: 10),
+      ],
+    ];
+  }
+
   List<TextSpan> _pageSpans(int page, TextStyle base, bool tajwid) {
     final spans = <TextSpan>[];
     for (final data in quran.getPageData(page)) {
@@ -653,16 +816,177 @@ class _PageModeState extends State<_PageMode> {
                 backgroundColor: AppColors.gold.withValues(alpha: 0.3))
             : base;
         final text = quran.getVerse(widget.surah, v);
+        // Распознаватель ставится на каждый кусок аята: Flutter берёт его
+        // у того спана, в который попал палец, а не у родителя.
+        final tap = _tapFor(v);
         if (tajwid) {
-          spans.addAll(Tajwid.spans(text, style));
+          for (final s in Tajwid.spans(text, style)) {
+            spans.add(TextSpan(text: s.text, style: s.style, recognizer: tap));
+          }
         } else {
-          spans.add(TextSpan(text: text, style: style));
+          spans.add(TextSpan(text: text, style: style, recognizer: tap));
         }
         spans.add(TextSpan(
-            text: ' ${quran.getVerseEndSymbol(v)} ', style: style));
+            text: ' ${quran.getVerseEndSymbol(v)} ',
+            style: style,
+            recognizer: tap));
       }
     }
     return spans;
+  }
+}
+
+/// Лист после последней страницы суры: куда поведёт следующий свайп.
+///
+/// Сам по себе он и есть подсказка — человек видит название следующей суры
+/// ещё до того, как экран сменится, и может свайпнуть обратно.
+class _NextSurahPage extends StatelessWidget {
+  final int next;
+  const _NextSurahPage({required this.next});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.auto_stories_outlined,
+                size: 40, color: AppColors.goldLight),
+            const SizedBox(height: 14),
+            Text(t('Следующая сура'),
+                style: const TextStyle(
+                    fontSize: 14, color: AppColors.textFaint)),
+            const SizedBox(height: 6),
+            Text('$next. ${surahName(next)}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(quran.getSurahNameArabic(next),
+                style: const TextStyle(
+                    fontSize: 18, color: AppColors.goldLight)),
+            const SizedBox(height: 20),
+            const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Лист с одним аятом: вязь, перевод и то, что с аятом можно сделать.
+class _VerseSheet extends StatelessWidget {
+  final int surah;
+  final int verse;
+  final QuranService qs;
+  final VoidCallback onListen;
+  const _VerseSheet({
+    required this.surah,
+    required this.verse,
+    required this.qs,
+    required this.onListen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.5,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (context, controller) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF12211F),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+        ),
+        // Перевод может догружаться, пока лист открыт, — слушаем сервис,
+        // чтобы текст появился сам, а не после повторного тапа.
+        child: AnimatedBuilder(
+          animation: qs,
+          builder: (context, _) {
+            final bookmarked = qs.isBookmarked(surah, verse);
+            final translation = qs.translationOf(surah, verse);
+            return ListView(
+              controller: controller,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text('${surahName(surah)} · $surah:$verse',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.goldLight)),
+                const SizedBox(height: 12),
+                Text(
+                  '${quran.getVerse(surah, verse)} '
+                  '${quran.getVerseEndSymbol(verse)}',
+                  textDirection: TextDirection.rtl,
+                  style: TextStyle(
+                      fontFamily: qs.arabicFont.family,
+                      fontSize: qs.arabicFontSize,
+                      height: 2.0,
+                      color: Colors.white),
+                ),
+                const SizedBox(height: 14),
+                if (translation.isNotEmpty)
+                  Text(translation,
+                      style: const TextStyle(
+                          fontSize: 16, height: 1.5, color: AppColors.textSoft))
+                else
+                  Text(
+                      qs.translationReady
+                          ? t('Перевода этого аята нет')
+                          : t('Загрузка перевода…'),
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                          color: AppColors.textFaint)),
+                const SizedBox(height: 20),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: onListen,
+                      icon: const Icon(Icons.play_circle_outline),
+                      label: Text(t('Слушать с этого аята')),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => showTafsir(context, surah, verse),
+                      icon: const Icon(Icons.menu_book_outlined),
+                      label: Text(t('Тафсир')),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => qs.toggleBookmark(surah, verse),
+                      icon: Icon(bookmarked
+                          ? Icons.bookmark
+                          : Icons.bookmark_border),
+                      label: Text(
+                          bookmarked ? t('В закладках') : t('В закладки')),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
   }
 }
 

@@ -28,11 +28,6 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Камера нужна, чтобы снять свой фон для приложения, а преподавателю — чтобы вести прямой эфир урока.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

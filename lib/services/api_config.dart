@@ -11,9 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ApiConfig {
   const ApiConfig._();
 
-  // TODO(security): перевести на https://<домен> и убрать ATS-исключение
-  // (NSAllowsArbitraryLoads) в ios/Runner/Info.plist.
-  static const defaultBase = 'http://178.104.206.100:8090';
+  static const defaultBase = 'https://api.irfan.kg';
 
   static Future<String> base() async {
     final prefs = await SharedPreferences.getInstance();

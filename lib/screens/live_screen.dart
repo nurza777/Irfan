@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../services/auth_service.dart';
 import '../services/chat_moderation.dart';
@@ -34,6 +35,10 @@ class _LiveScreenState extends State<LiveScreen> {
   int _stallTicks = 0;
   bool _reopening = false;
 
+  /// Сколько человек смотрит прямо сейчас. Приходит ответом на сердцебиение
+  /// в том же опросе, что и статус, — лишних запросов не делаем.
+  int _viewers = 0;
+
   @override
   void initState() {
     super.initState();
@@ -49,6 +54,9 @@ class _LiveScreenState extends State<LiveScreen> {
     _poll?.cancel();
     _watchdog?.cancel();
     _player?.dispose();
+    // Снимаем удержание экрана: без этого телефон не гаснет и после ухода
+    // с эфира, а человек об этом не догадывается — садится батарея.
+    WakelockPlus.disable();
     super.dispose();
   }
 
@@ -121,6 +129,21 @@ class _LiveScreenState extends State<LiveScreen> {
       _player = null;
     }
 
+    // Эфир смотрят не касаясь экрана — и телефон гаснет посреди урока.
+    // Держим экран ровно пока идёт трансляция и есть что показывать.
+    if (s.live && _player != null) {
+      await WakelockPlus.enable();
+      // Отмечаемся зрителем и тем же ответом получаем счётчик. Считаемся
+      // только когда реально смотрим: открытый экран без потока — не зритель.
+      final n = await LiveService.ping();
+      if (mounted && n != null && n != _viewers) {
+        setState(() => _viewers = n);
+      }
+    } else {
+      await WakelockPlus.disable();
+      if (mounted && _viewers != 0) setState(() => _viewers = 0);
+    }
+
     if (!mounted) return;
     setState(() {
       _status = s;
@@ -143,7 +166,10 @@ class _LiveScreenState extends State<LiveScreen> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 66, 20, 20),
             child: _status.live
-                ? _LiveView(status: _status, player: _player)
+                ? _LiveView(
+                    status: _status,
+                    player: _player,
+                    viewers: _viewers)
                 : _OffAir(
                     checking: _checking,
                     lastCheck: _lastCheck,
@@ -254,7 +280,9 @@ class _OffAir extends StatelessWidget {
 class _LiveView extends StatefulWidget {
   final LiveStatus status;
   final VideoPlayerController? player;
-  const _LiveView({required this.status, required this.player});
+  final int viewers;
+  const _LiveView(
+      {required this.status, required this.player, required this.viewers});
 
   @override
   State<_LiveView> createState() => _LiveViewState();
@@ -414,8 +442,19 @@ class _LiveViewState extends State<_LiveView> {
                                 child: VideoPlayer(p),
                               ),
                             ),
-                            const Positioned(
-                                top: 10, left: 10, child: _LiveTag()),
+                            Positioned(
+                              top: 10,
+                              left: 10,
+                              child: Row(
+                                children: [
+                                  const _LiveTag(),
+                                  if (widget.viewers > 0) ...[
+                                    const SizedBox(width: 6),
+                                    _ViewersTag(widget.viewers),
+                                  ],
+                                ],
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -652,6 +691,38 @@ class _LiveViewState extends State<_LiveView> {
                   color: AppColors.gold, fontWeight: FontWeight.w600)),
         ),
       ],
+    );
+  }
+}
+
+/// Сколько человек смотрит эфир. Показываем только когда число известно
+/// и больше нуля: «0 смотрят» на экране у того, кто смотрит, выглядело бы
+/// поломкой, а до первого сердцебиения счётчик просто не знает ответа.
+class _ViewersTag extends StatelessWidget {
+  final int count;
+  const _ViewersTag(this.count);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.visibility_outlined,
+              size: 13, color: Colors.white),
+          const SizedBox(width: 5),
+          Text('$count',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
+        ],
+      ),
     );
   }
 }

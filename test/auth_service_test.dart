@@ -16,7 +16,7 @@ void main() {
         name: 'Тест',
         phone: '0555123456',
         password: 'secret1',
-        age: 20,
+        birthDate: DateTime(1996, 5, 20),
         gender: Gender.male);
     expect(err, isNull);
 
@@ -38,7 +38,7 @@ void main() {
         name: 'Тест',
         phone: '0555123456',
         password: 'secret1',
-        age: 20,
+        birthDate: DateTime(1996, 5, 20),
         gender: Gender.male);
 
     final raw = prefs.getString('auth_users')!;
@@ -78,14 +78,14 @@ void main() {
   });
 
 
-  test('регистрация требует телефон — по нему приходит код подтверждения',
+  test('регистрация требует телефон — он же опознаватель аккаунта',
       () async {
     final auth = await AuthService.create();
     final err = await auth.register(
         name: 'Тест',
         phone: '',
         password: 'secret1',
-        age: 20,
+        birthDate: DateTime(1996, 5, 20),
         gender: Gender.male);
     expect(err, isNotNull, reason: 'без телефона регистрация не проходит');
   });
@@ -100,13 +100,85 @@ void main() {
     expect(normalizePhone(''), '');
   });
 
+  test('доказательство пароля одинаково на любом телефоне', () async {
+    // Ради этого свойства оно и заведено: человек вводит номер и пароль на
+    // НОВОМ телефоне, где никакой местной соли нет, и сервер узнаёт его.
+    final a = await AuthService.makeProof('0555123456', 'secret1');
+    final b = await AuthService.makeProof('+996 555 123 456', 'secret1');
+    expect(a, isNotEmpty);
+    expect(b, a, reason: 'номер в любой записи даёт то же значение');
+
+    final other = await AuthService.makeProof('0555123456', 'secret2');
+    expect(other, isNot(a), reason: 'другой пароль — другое значение');
+
+    final another = await AuthService.makeProof('0700111222', 'secret1');
+    expect(another, isNot(a),
+        reason: 'соль из номера: один пароль у разных людей не совпадает');
+
+    expect(await AuthService.makeProof('', 'secret1'), '');
+    expect(await AuthService.makeProof('0555123456', ''), '');
+  });
+
+  test('доказательство сохраняется при регистрации', () async {
+    final auth = await AuthService.create();
+    await auth.register(
+        name: 'Тест',
+        phone: '0555123456',
+        password: 'secret1',
+        birthDate: DateTime(1996, 5, 20),
+        gender: Gender.male);
+    final want = await AuthService.makeProof('0555123456', 'secret1');
+    expect(auth.current!.serverProof, want);
+
+    // И переживает перечитывание хранилища: значение уходит на сервер при
+    // каждом отчёте, а не только сразу после регистрации.
+    final again = await AuthService.create();
+    expect(again.current!.serverProof, want);
+  });
+
+  test('вход дописывает доказательство старой записи', () async {
+    final auth = await AuthService.create();
+    await auth.register(
+        name: 'Тест',
+        phone: '0555123456',
+        password: 'secret1',
+        birthDate: DateTime(1996, 5, 20),
+        gender: Gender.male);
+    // Убираем доказательство, как будто запись завела прежняя сборка.
+    final prefs = await SharedPreferences.getInstance();
+    final users = jsonDecode(prefs.getString('auth_users')!) as List;
+    (users.first as Map).remove('serverProof');
+    await prefs.setString('auth_users', jsonEncode(users));
+
+    final fresh = await AuthService.create();
+    expect(fresh.current!.serverProof, isEmpty);
+    expect(await fresh.login(phone: '0555123456', password: 'secret1'), isNull);
+    expect(fresh.current!.serverProof,
+        await AuthService.makeProof('0555123456', 'secret1'));
+  });
+
+  test('hasLocal отличает свой телефон от чужого', () async {
+    final auth = await AuthService.create();
+    await auth.register(
+        name: 'Тест',
+        phone: '0555123456',
+        password: 'secret1',
+        birthDate: DateTime(1996, 5, 20),
+        gender: Gender.male);
+    expect(auth.hasLocal('0555123456'), isTrue);
+    expect(auth.hasLocal('+996555123456'), isTrue);
+    // По этому признаку вход решает, идти ли за аккаунтом на сервер.
+    expect(auth.hasLocal('0700999888'), isFalse);
+    expect(auth.hasLocal(''), isFalse);
+  });
+
   test('анкета сохраняется в аккаунте', () async {
     final auth = await AuthService.create();
     await auth.register(
         name: 'Тест',
         phone: '0700111222',
         password: 'secret1',
-        age: 20,
+        birthDate: DateTime(1996, 5, 20),
         gender: Gender.male,
         city: 'Ош');
     expect(auth.current!.phone, '+996700111222');

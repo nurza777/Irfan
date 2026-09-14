@@ -101,10 +101,20 @@ PY
 
 suite "$TESTS/test_staff_auth.py"  "Учётки и токены устаза"
 suite "$TESTS/test_student_key.py" "Ключ устройства ученика"
+suite "$TESTS/test_support_chat.py" "Чат с поддержкой"
+suite "$TESTS/test_rating.py" "Соревнование и приглашения"
 suite "$TESTS/test_limits.py"      "Потолки размера и подделка адреса"
 suite "$TESTS/test_crashes.py"     "Приём сбоев приложения"
 suite "$TESTS/test_restore.py"     "Перенос аккаунта на другой телефон"
 suite "$TESTS/test_certificates.py" "Сертификаты и дипломы"
+# Книги проверяем тоже при включённых подписях: смысл проверки в том, что
+# файлы каталога открыты, а соседние уроки — нет.
+suite "$TESTS/test_books.py" "Книги: каталог и раздача файлов" '
+printf "{\"require_signed\": true, \"secret\": \"test-media-secret-0123456789\"}" > media.json
+printf "%%PDF-1.4 test" > api/uploads/kitab.pdf
+printf "jpeg" > api/uploads/oblozhka.jpg
+printf "video" > api/uploads/urok.mp4
+'
 # Подписанные ссылки нужно проверять при ВКЛЮЧЕННОЙ проверке — на бою она
 # пока выключена, чтобы не оборвать старые сборки на телефонах.
 suite "$TESTS/test_media_links.py" "Подписанные ссылки на уроки" '

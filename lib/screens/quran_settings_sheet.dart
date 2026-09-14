@@ -122,24 +122,7 @@ class _QuranSettings extends StatelessWidget {
                               style: TextStyle(fontSize: 30)),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      _label(t('ШРИФТ АРАБСКОГО')),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          for (final f in QuranFont.values) ...[
-                            Expanded(
-                              child: _FontCard(
-                                font: f,
-                                active: qs.arabicFont == f,
-                                onTap: () => qs.setArabicFont(f),
-                              ),
-                            ),
-                            if (f != QuranFont.values.last)
-                              const SizedBox(width: 10),
-                          ],
-                        ],
-                      ),
+                      // Выбора шрифта больше нет — он один, «Мусхаф».
                       const SizedBox(height: 18),
                       _label(t('ЧТЕЦ')),
                       const SizedBox(height: 8),
@@ -386,58 +369,6 @@ class _ReciterTile extends StatelessWidget {
     );
   }
 }
-
-class _FontCard extends StatelessWidget {
-  final QuranFont font;
-  final bool active;
-  final VoidCallback onTap;
-  const _FontCard(
-      {required this.font, required this.active, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: active ? 0.4 : 0.2),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-              color: active
-                  ? AppColors.gold
-                  : Colors.white.withValues(alpha: 0.15),
-              width: active ? 1.5 : 1),
-        ),
-        child: Column(
-          children: [
-            Text('بِسْمِ ٱللَّٰهِ',
-                textDirection: TextDirection.rtl,
-                style: TextStyle(
-                    fontFamily: font.family,
-                    fontSize: 22,
-                    height: 1.6,
-                    color: active ? AppColors.goldLight : Colors.white)),
-            const SizedBox(height: 6),
-            Text(t(font.titleRu),
-                style: TextStyle(
-                    fontSize: 15,
-                    fontWeight:
-                        active ? FontWeight.w700 : FontWeight.w500)),
-            const SizedBox(height: 2),
-            Text(t(font.subtitleRu),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.white.withValues(alpha: 0.6))),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _ModeCard extends StatelessWidget {
   final ReadingMode mode;
   final bool active;

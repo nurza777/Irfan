@@ -8,6 +8,8 @@ import '../services/visual_effects.dart';
 import '../theme.dart';
 import 'staff/staff_home.dart';
 import 'wallpaper_sheet.dart';
+import '../services/staff_auth.dart';
+import '../widgets/support_section.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/city_picker.dart';
 import '../widgets/glass.dart';
@@ -172,6 +174,56 @@ class SettingsScreen extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               FadeSlideIn(
+                delay: const Duration(milliseconds: 320),
+                child: GlassCard(
+                  radius: 20,
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.emoji_events_outlined,
+                              size: 20, color: AppColors.gold),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(t('Скрыть меня из таблицы'),
+                                style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                          Switch(
+                            value: s.hideInRating,
+                            activeThumbColor: AppColors.accentGreen,
+                            onChanged: (v) => state.setHideInRating(v),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        s.hideInRating
+                            ? t('Вас не видно в общем топе. Своё место вы '
+                                'по-прежнему видите, очки начисляются как обычно.')
+                            : t('В таблице показывается только имя — ни номера, '
+                                'ни города, ни возраста.'),
+                        style: TextStyle(
+                            fontSize: 13,
+                            height: 1.35,
+                            color: Colors.white.withValues(alpha: 0.65)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              // Раздел сам исчезает, если контакты в панели не заполнены,
+              // — поэтому отступ и анимация тоже внутри него.
+              const FadeSlideIn(
+                delay: Duration(milliseconds: 340),
+                child: SupportSection(),
+              ),
+              const SizedBox(height: 14),
+              FadeSlideIn(
                 delay: const Duration(milliseconds: 360),
                 child: GlassCard(
                   radius: 20,
@@ -205,26 +257,7 @@ class SettingsScreen extends StatelessWidget {
                             color: Colors.white54),
                         onTap: () => showWallpaperSheet(context),
                       ),
-                      Divider(
-                          height: 1,
-                          color: Colors.white.withValues(alpha: 0.1)),
-                      // Кабинет устаза открыт всем, но пускает только по
-                      // логину и паролю от администратора: отдельного
-                      // приложения для преподавателей больше нет.
-                      ListTile(
-                        leading: const Icon(Icons.school_outlined,
-                            color: AppColors.gold),
-                        title: Text(t('Кабинет устаза')),
-                        subtitle: Text(
-                            t('Эфир, курсы и новости — для преподавателей'),
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.white
-                                    .withValues(alpha: 0.6))),
-                        trailing: const Icon(Icons.chevron_right,
-                            color: Colors.white54),
-                        onTap: () => StaffHome.open(context),
-                      ),
+                      const _StaffTile(),
                       Divider(
                           height: 1,
                           color: Colors.white.withValues(alpha: 0.1)),
@@ -238,6 +271,11 @@ class SettingsScreen extends StatelessWidget {
                                 fontSize: 13,
                                 color: Colors.white
                                     .withValues(alpha: 0.6))),
+                        // Вход для устаза, который ещё не входил. Строка
+                        // «Кабинет устаза» показывается только вошедшим, и
+                        // без этого долгого нажатия войти было бы негде
+                        // вовсе — устазы узнают о нём от администратора.
+                        onLongPress: () => StaffHome.open(context),
                       ),
                     ],
                   ),
@@ -325,6 +363,8 @@ class _NotificationsCard extends StatefulWidget {
 
 class _NotificationsCardState extends State<_NotificationsCard> {
   static const _beforeOptions = [0, 5, 10, 15, 30];
+  /// Через сколько минут после намаза спрашивать «прочитали?».
+  static const _askOptions = [10, 15, 20, 30, 45, 60];
 
   @override
   Widget build(BuildContext context) {
@@ -368,6 +408,129 @@ class _NotificationsCardState extends State<_NotificationsCard> {
                 : t('Включите, чтобы не пропускать время намаза.'),
             style: TextStyle(
                 fontSize: 13, color: Colors.white.withValues(alpha: 0.65)),
+          ),
+          const SizedBox(height: 6),
+          const Divider(height: 22, color: Colors.white24),
+          // Эфир — отдельным переключателем: время намаза известно заранее и
+          // напоминание ставится на телефоне, а эфир начинается когда угодно,
+          // и узнать о нём можно только уведомлением с сервера.
+          Row(
+            children: [
+              const Icon(Icons.sensors, size: 20, color: AppColors.gold),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(t('Уведомлять о начале эфира'),
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+              ),
+              Switch(
+                value: s.liveNotificationsEnabled,
+                activeThumbColor: AppColors.accentGreen,
+                onChanged: (v) async {
+                  final result = await state.setLiveNotificationsEnabled(v);
+                  if (v && !result && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(t(
+                            'Разрешите уведомления для «Ирфан» в настройках iOS'))));
+                  }
+                },
+              ),
+            ],
+          ),
+          Text(
+            s.liveNotificationsEnabled
+                ? t('Придёт уведомление, когда устаз начнёт трансляцию.')
+                : t('Эфир начинается в разное время — без уведомления его легко пропустить.'),
+            style: TextStyle(
+                fontSize: 13, color: Colors.white.withValues(alpha: 0.65)),
+          ),
+          const SizedBox(height: 6),
+          const Divider(height: 22, color: Colors.white24),
+          // Вопрос после намаза — независим от азана: кто-то не хочет звонка
+          // ко времени намаза, но хочет, чтобы потом спросили и можно было
+          // отметить, не открывая приложение.
+          Row(
+            children: [
+              const Icon(Icons.check_circle_outline,
+                  size: 20, color: AppColors.gold),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(t('Спрашивать, прочитан ли намаз'),
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+              ),
+              Switch(
+                value: s.askEnabled,
+                activeThumbColor: AppColors.accentGreen,
+                onChanged: (v) async {
+                  final result = await state.setAskEnabled(v);
+                  if (v && !result && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(t(
+                            'Разрешите уведомления для «Ирфан» в настройках iOS'))));
+                  }
+                },
+              ),
+            ],
+          ),
+          Text(
+            s.askEnabled
+                ? t('Отметить «Да» или «Нет» можно прямо в уведомлении.')
+                : t('Отмечать намазы придётся вручную в трекере.'),
+            style: TextStyle(
+                fontSize: 13, color: Colors.white.withValues(alpha: 0.65)),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+            child: !s.askEnabled
+                ? const SizedBox(width: double.infinity)
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 12),
+                      // Проверка кнопок «Да»/«Нет». Без неё убедиться, что
+                      // они работают, можно только дождавшись времени намаза
+                      // и заданной паузы — то есть часами. А кнопки живут
+                      // в системном слое: тестами их не покрыть, ломаются
+                      // они молча, и однажды уже сломались.
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await state.sendAskTest();
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text(t('Уведомление придёт через 5 секунд. '
+                                'Закройте приложение и нажмите «Да» — отметка '
+                                'появится в трекере.')),
+                            duration: const Duration(seconds: 6),
+                          ));
+                        },
+                        icon: const Icon(Icons.notifications_active_outlined,
+                            size: 18),
+                        label: Text(t('Проверить уведомление')),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(t('СПРАШИВАТЬ ЧЕРЕЗ'),
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1,
+                              color: Colors.white.withValues(alpha: 0.5))),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final m in _askOptions)
+                            _chip(
+                              appLang == Lang.ky ? '$m мүн.' : '$m мин',
+                              s.askDelayMinutes == m,
+                              () => state.setAskDelayMinutes(m),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
           ),
           AnimatedSize(
             duration: const Duration(milliseconds: 300),
@@ -528,6 +691,65 @@ class _SectionTitle extends StatelessWidget {
         Text(title,
             style: const TextStyle(
                 fontSize: 17, fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+}
+
+/// Строка «Кабинет устаза» — только для тех, кто уже вошёл.
+///
+/// Раньше она стояла у всех, и посторонний упирался в окно логина. Само по
+/// себе это безопасно (пароль заводит администратор), но обычному человеку
+/// незачем даже знать, что в приложении есть служебная часть: чем меньше
+/// заметна дверь, тем меньше в неё стучат.
+///
+/// Войти в первый раз можно долгим нажатием на «О приложении» — иначе
+/// скрытая строка заперла бы кабинет навсегда.
+class _StaffTile extends StatefulWidget {
+  const _StaffTile();
+
+  @override
+  State<_StaffTile> createState() => _StaffTileState();
+}
+
+class _StaffTileState extends State<_StaffTile> {
+  @override
+  void initState() {
+    super.initState();
+    // Токен лежит в Keychain: пока его не прочитали, ответ «не устаз» —
+    // неправда, а не факт. Поэтому строку рисуем после init(), а на
+    // выход из кабинета откликаемся через подписку.
+    StaffAuth.instance.addListener(_onChanged);
+    StaffAuth.instance.init().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    StaffAuth.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!StaffAuth.instance.isStaff) return const SizedBox.shrink();
+    return Column(
+      children: [
+        Divider(height: 1, color: Colors.white.withValues(alpha: 0.1)),
+        ListTile(
+          leading: const Icon(Icons.school_outlined, color: AppColors.gold),
+          title: Text(t('Кабинет устаза')),
+          subtitle: Text(t('Эфир, курсы и новости — для преподавателей'),
+              style: TextStyle(
+                  fontSize: 13, color: Colors.white.withValues(alpha: 0.6))),
+          trailing: const Icon(Icons.chevron_right, color: Colors.white54),
+          onTap: () => StaffHome.open(context),
+        ),
       ],
     );
   }

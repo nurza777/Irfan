@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../app_state.dart';
 import '../services/courses_service.dart';
 import '../services/lang.dart';
 import '../services/teachers_service.dart';
@@ -74,6 +77,12 @@ class _CoursesPageState extends State<CoursesPage> {
         _loading = false;
       });
     }
+
+    // Заодно перезапрашиваем доступы. Раньше они приходили только при
+    // запуске приложения: админ выдавал доступ, ученик обновлял список
+    // курсов — и всё равно видел замок, потому что список доступов в памяти
+    // остался прежним. Теперь кнопка обновления обновляет и его.
+    unawaited(AppScope.of(context).refreshAccess());
 
     // Реестр и каталог тянем разом: это два запроса к одному серверу,
     // и ждать их по очереди значит удваивать паузу.

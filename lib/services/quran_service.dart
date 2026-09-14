@@ -19,16 +19,25 @@ enum ReadingMode {
 }
 
 /// Шрифт арабского текста Корана.
+///
+/// Вариант остался один — «Мусхаф» (AmiriQuran). Системный наскх убран по
+/// решению владельца: Коран читают в привычном печатном начертании, а выбор
+/// между двумя шрифтами только заставлял человека гадать, какой «правильный».
+///
+/// Про один недостающий знак. В тексте Корана 1807 раз встречается U+065E
+/// (фатха с двумя точками), а в AmiriQuran его нет. Квадрата на его месте не
+/// будет: Flutter подставляет системный шрифт для отдельного отсутствующего
+/// символа, а не для всей строки. Начертание этого знака может чуть
+/// отличаться — это плата за единый шрифт, и она не стоит второй кнопки
+/// в настройках.
 enum QuranFont {
-  standard('Обычный', 'Системный наскх'),
   mushaf('Мусхаф', 'Как в печатном Коране');
 
   final String titleRu;
   final String subtitleRu;
   const QuranFont(this.titleRu, this.subtitleRu);
 
-  /// fontFamily для Text; null — системный шрифт.
-  String? get family => this == QuranFont.mushaf ? 'AmiriQuran' : null;
+  String? get family => 'AmiriQuran';
 }
 
 /// Что показывать в аяте.
@@ -77,10 +86,10 @@ class QuranService extends ChangeNotifier {
 
   double get arabicFontSize => _prefs.getDouble('quran_font') ?? 26;
 
-  QuranFont get arabicFont => QuranFont.values.firstWhere(
-        (f) => f.name == _prefs.getString('quran_font_family'),
-        orElse: () => QuranFont.standard,
-      );
+  /// Шрифт всегда один. Сохранённое значение больше не читаем: у тех, кто
+  /// раньше выбрал системный, оно осталось в хранилище и вернуло бы им
+  /// прежний шрифт после обновления.
+  QuranFont get arabicFont => QuranFont.mushaf;
 
   Future<void> setArabicFont(QuranFont f) async {
     await _prefs.setString('quran_font_family', f.name);

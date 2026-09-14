@@ -3,15 +3,17 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../services/auth_service.dart';
 import '../services/certificate_service.dart';
+import '../services/date_fmt.dart';
 import '../services/lang.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
+import '../widgets/support_card.dart';
 import 'restore_account_screen.dart';
 import 'settings_screen.dart';
 import 'certificates_screen.dart';
+import 'rating_screen.dart';
 import 'shop_screen.dart';
-import 'verify_phone_screen.dart';
 import 'zikr_settings_sheet.dart';
 
 /// Личный кабинет: без входа — форма регистрации/авторизации,
@@ -46,6 +48,24 @@ class AccountScreen extends StatelessWidget {
 
 // ---------------------------------------------------------------- Вход
 
+/// «25 лет» / «21 год» / «22 года». Нужна и в форме регистрации, и в карточке
+/// профиля — поэтому вынесена из класса, а не скопирована во второй раз.
+String _years(int n) {
+  if (appLang == Lang.ky) return '$n жаш';
+  final m10 = n % 10, m100 = n % 100;
+  if (m10 == 1 && m100 != 11) return '$n год';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return '$n года';
+  return '$n лет';
+}
+
+/// Полных лет от даты рождения до сегодня.
+int ageFromBirth(DateTime b) {
+  final now = DateTime.now();
+  var y = now.year - b.year;
+  if (now.month < b.month || (now.month == b.month && now.day < b.day)) y--;
+  return y;
+}
+
 class _AuthForm extends StatefulWidget {
   const _AuthForm();
 
@@ -60,7 +80,9 @@ class _AuthFormState extends State<_AuthForm> {
   String? _error;
   Gender? _gender;
   final _name = TextEditingController();
-  final _age = TextEditingController();
+  /// Дата рождения вместо числа лет: число застывало навсегда — анкета
+  /// говорила «25» и через три года.
+  DateTime? _birth;
   final _phone = TextEditingController();
   final _city = TextEditingController();
   final _password = TextEditingController();
@@ -68,7 +90,6 @@ class _AuthFormState extends State<_AuthForm> {
   @override
   void dispose() {
     _name.dispose();
-    _age.dispose();
     _phone.dispose();
     _city.dispose();
     _password.dispose();
@@ -88,7 +109,7 @@ class _AuthFormState extends State<_AuthForm> {
             name: _name.text,
             phone: _phone.text,
             password: _password.text,
-            age: int.tryParse(_age.text.trim()) ?? 0,
+            birthDate: _birth,
             gender: _gender,
             city: _city.text);
     if (!mounted) return;
@@ -96,18 +117,29 @@ class _AuthFormState extends State<_AuthForm> {
       _busy = false;
       _error = err;
     });
-    // Успешная регистрация — сразу просим подтвердить телефон.
-    if (err == null && !_isLogin) {
-      final u = state.auth?.current;
-      if (u != null && u.phone.isNotEmpty) {
-        await Navigator.push<String>(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VerifyPhoneScreen(phone: u.phone),
-          ),
-        );
-      }
+    // Успешная регистрация — сначала прямо об этом говорим.
+    //
+    // Раньше экран просто сменялся на подтверждение номера, и человек не
+    // понимал, завелась ли учётная запись: подтверждение номера выглядит
+    // как продолжение анкеты, а не как «готово».
+    if (err == null && !_isLogin && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(t('Регистрация прошла успешно')),
+        backgroundColor: AppColors.accentGreen,
+        duration: const Duration(seconds: 3),
+      ));
     }
+    // Кода подтверждения в приложении БОЛЬШЕ НЕТ НИГДЕ — ни после анкеты,
+    // ни при переезде на новый телефон.
+    //
+    // Автоотправка не подключена: код называл устаз вручную, и человек
+    // упирался в ожидание на ровном месте. По решению владельца люди входят
+    // своим номером и паролем, и этого достаточно.
+    //
+    // Доказательством «номер мой» теперь служит пароль: приложение считает
+    // из него значение, одинаковое на любом телефоне, и сервер сверяет его
+    // со своим (см. AuthService.makeProof). Забыл пароль — админ сбрасывает
+    // его в панели.
   }
 
   Future<void> _restore() async {
@@ -120,6 +152,7 @@ class _AuthFormState extends State<_AuthForm> {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppScope.of(context);
     return Column(
       children: [
         const SizedBox(height: 10),
@@ -166,12 +199,7 @@ class _AuthFormState extends State<_AuthForm> {
                             ),
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
-                              child: TextField(
-                                controller: _age,
-                                keyboardType: TextInputType.number,
-                                decoration:
-                                    _dec('Возраст', Icons.cake_outlined),
-                              ),
+                              child: _birthField(),
                             ),
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
@@ -182,6 +210,50 @@ class _AuthFormState extends State<_AuthForm> {
                                 decoration: _dec(
                                     'Город', Icons.location_city_outlined),
                               ),
+                            ),
+                            // Язык — первым: человек, которому удобнее
+                            // кыргызский, должен переключиться до того, как
+                            // начнёт разбирать анкету, а не после.
+                            Padding(
+                              padding:
+                                  const EdgeInsets.only(left: 4, bottom: 6),
+                              child: Text(t('Язык'),
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: Colors.white
+                                          .withValues(alpha: 0.55))),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 14),
+                              child: Row(
+                                children: [
+                                  for (final l in Lang.values) ...[
+                                    Expanded(
+                                      child: _langTab(l,
+                                          state.settings?.lang == l,
+                                          () => state.setLanguage(l)),
+                                    ),
+                                    if (l != Lang.values.last)
+                                      const SizedBox(width: 10),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            // Пол — необязателен, и это написано прямо на
+                            // экране. Нужен он ровно для окончаний в
+                            // поздравлениях и на дипломе; не указан — пишем
+                            // в мужском роде. Обязательным он быть не может:
+                            // App Store запрещает требовать личные данные,
+                            // без которых приложение работает (5.1.1(v)).
+                            Padding(
+                              padding:
+                                  const EdgeInsets.only(left: 4, bottom: 6),
+                              child: Text(
+                                  t('Пол (необязательно)'),
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: Colors.white
+                                          .withValues(alpha: 0.55))),
                             ),
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
@@ -229,10 +301,26 @@ class _AuthFormState extends State<_AuthForm> {
                       ? const SizedBox.shrink()
                       : Padding(
                           padding: const EdgeInsets.only(top: 12),
-                          child: Text(_error!,
-                              style: const TextStyle(
-                                  color: Colors.redAccent,
-                                  fontSize: 14)),
+                          child: Column(
+                            children: [
+                              Text(_error!,
+                                  style: const TextStyle(
+                                      color: Colors.redAccent,
+                                      fontSize: 14)),
+                              // Восстановление пароля — через админа: он
+                              // сбрасывает пароль в панели, и следующий вход
+                              // задаёт новый. Кнопки связи показываем прямо
+                              // под ошибкой, чтобы не искать их в настройках.
+                              if (_isLogin && _error == t('Неверный пароль'))
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 12),
+                                  child: SupportCard(
+                                    text: t('Забыли пароль? Свяжитесь с нами — '
+                                        'сбросим его, и вы войдёте с новым.'),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                 ),
                 const SizedBox(height: 18),
@@ -266,9 +354,11 @@ class _AuthFormState extends State<_AuthForm> {
                                 fontWeight: FontWeight.w600)),
                   ),
                 ),
-                // Смена телефона — самая частая настоящая потеря: аккаунт
-                // живёт на устройстве, и без этой кнопки серия, коины и вся
-                // история намазов оставались на прежнем аппарате навсегда.
+                // Отдельная кнопка осталась, хотя обычный «Войти» теперь
+                // и сам сходит на сервер, если записи на телефоне нет.
+                // Человек, у которого аккаунт «пропал» вместе со старым
+                // аппаратом, ищет глазами именно слово «восстановить» — и
+                // этот экран ещё показывает, что именно вернётся.
                 if (_isLogin)
                   TextButton(
                     onPressed: _busy ? null : _restore,
@@ -305,10 +395,96 @@ class _AuthFormState extends State<_AuthForm> {
     );
   }
 
+  /// Поле даты рождения: открывает календарь, показывает выбранное и
+  /// сразу подписывает получившийся возраст — чтобы промах в году был виден
+  /// на месте, а не всплыл в дипломе через полгода.
+  Widget _birthField() {
+    final b = _birth;
+    return PressableScale(
+      onTap: _pickBirth,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(14),
+          border:
+              Border.all(color: Colors.white.withValues(alpha: 0.15)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.cake_outlined,
+                size: 20, color: AppColors.goldLight),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                b == null
+                    ? t('Дата рождения')
+                    : '${fmtDateShort(b)} · ${_years(ageFromBirth(b))}',
+                style: TextStyle(
+                    fontSize: 15,
+                    color: b == null
+                        ? Colors.white.withValues(alpha: 0.5)
+                        : Colors.white),
+              ),
+            ),
+            Icon(Icons.chevron_right,
+                color: Colors.white.withValues(alpha: 0.4)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickBirth() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      // Открываем не на сегодняшнем дне, а на разумном году: иначе человеку
+      // пришлось бы отлистать три десятка лет назад.
+      initialDate: _birth ?? DateTime(now.year - 20, now.month, now.day),
+      firstDate: DateTime(now.year - 120),
+      lastDate: DateTime(now.year - 5, now.month, now.day),
+      helpText: t('Дата рождения'),
+    );
+    if (picked != null) setState(() => _birth = picked);
+  }
+
+  /// Кнопка выбора языка на экране регистрации. Устроена как выбор пола
+  /// ниже — одинаковые на вид кнопки в одной форме не должны отличаться
+  /// поведением.
+  Widget _langTab(Lang l, bool active, VoidCallback onTap) {
+    return PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: active ? 0.4 : 0.15),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: active
+                  ? AppColors.gold
+                  : Colors.white.withValues(alpha: 0.15),
+              width: active ? 1.4 : 1),
+        ),
+        child: Text(l.label,
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: active
+                    ? AppColors.cream
+                    : Colors.white.withValues(alpha: 0.7))),
+      ),
+    );
+  }
+
   Widget _genderTab(Gender g) {
     final active = _gender == g;
     return PressableScale(
-      onTap: () => setState(() => _gender = g),
+      // Повторное нажатие снимает выбор: раз поле необязательное, человек
+      // должен уметь передумать, а не только выбрать.
+      onTap: () => setState(() => _gender = _gender == g ? null : g),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.symmetric(vertical: 9),
@@ -481,15 +657,21 @@ class _Profile extends StatelessWidget {
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        Icon(
-                            (user.gender as Gender) == Gender.male
-                                ? Icons.male
-                                : Icons.female,
-                            size: 15,
-                            color: AppColors.goldLight),
-                        const SizedBox(width: 4),
+                        // Пол может быть не указан — тогда строку про него
+                        // просто не показываем, остаётся возраст.
+                        if (user.gender != null) ...[
+                          Icon(
+                              (user.gender as Gender) == Gender.male
+                                  ? Icons.male
+                                  : Icons.female,
+                              size: 15,
+                              color: AppColors.goldLight),
+                          const SizedBox(width: 4),
+                        ],
                         Text(
-                            '${t((user.gender as Gender).titleRu)} · ${_years(user.age as int)}',
+                            user.gender == null
+                                ? _years(user.age as int)
+                                : '${t((user.gender as Gender).titleRu)} · ${_years(user.age as int)}',
                             style: TextStyle(
                                 fontSize: 13,
                                 color: Colors.white
@@ -591,6 +773,33 @@ class _Profile extends StatelessWidget {
                             fontSize: 15, fontWeight: FontWeight.w700)),
                   ),
                 ),
+                const SizedBox(height: 10),
+                // Соревнование — рядом с коинами намеренно: очки берутся из
+                // тех же намазов и зикров, и человек должен видеть это
+                // в одном месте, а не искать таблицу в настройках.
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      side: BorderSide(
+                          color: AppColors.gold.withValues(alpha: 0.55)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const RatingScreen())),
+                    icon: const Icon(Icons.emoji_events_outlined,
+                        size: 20, color: AppColors.goldLight),
+                    label: Text(t('Соревнование и друзья'),
+                        style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.goldLight)),
+                  ),
+                ),
               ],
             ),
           ),
@@ -687,19 +896,11 @@ class _Profile extends StatelessWidget {
     );
   }
 
-  String _years(int n) {
-    if (appLang == Lang.ky) return '$n жаш';
-    final m10 = n % 10, m100 = n % 100;
-    if (m10 == 1 && m100 != 11) return '$n год';
-    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return '$n года';
-    return '$n лет';
-  }
 
   Future<void> _editProfile(
       BuildContext context, AppState state, dynamic user) async {
-    final ageCtrl = TextEditingController(
-        text: (user.age as int) > 0 ? '${user.age}' : '');
-    var gender = user.gender as Gender;
+    DateTime? birth = user.birthDate as DateTime?;
+    Gender? gender = user.gender as Gender?;
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -721,16 +922,48 @@ class _Profile extends StatelessWidget {
                   style:
                       TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
               const SizedBox(height: 14),
-              TextField(
-                controller: ageCtrl,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: t('Возраст'),
-                  filled: true,
-                  fillColor: Colors.black.withValues(alpha: 0.3),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none),
+              PressableScale(
+                onTap: () async {
+                  final now = DateTime.now();
+                  final picked = await showDatePicker(
+                    context: ctx,
+                    initialDate: birth ??
+                        DateTime(now.year - 20, now.month, now.day),
+                    firstDate: DateTime(now.year - 120),
+                    lastDate: DateTime(now.year - 5, now.month, now.day),
+                    helpText: t('Дата рождения'),
+                  );
+                  if (picked != null) setSheet(() => birth = picked);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cake_outlined,
+                          size: 20, color: AppColors.goldLight),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          birth == null
+                              ? t('Дата рождения')
+                              : '${fmtDateShort(birth!)} · '
+                                  '${_years(ageFromBirth(birth!))}',
+                          style: TextStyle(
+                              fontSize: 15,
+                              color: birth == null
+                                  ? Colors.white.withValues(alpha: 0.5)
+                                  : Colors.white),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right,
+                          color: Colors.white.withValues(alpha: 0.4)),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -801,12 +1034,8 @@ class _Profile extends StatelessWidget {
         ),
       ),
     );
-    final age = int.tryParse(ageCtrl.text.trim());
-    ageCtrl.dispose();
     if (saved == true) {
-      await state.updateProfile(
-          age: (age != null && age >= 5 && age <= 120) ? age : null,
-          gender: gender);
+      await state.updateProfile(birthDate: birth, gender: gender);
     }
   }
 

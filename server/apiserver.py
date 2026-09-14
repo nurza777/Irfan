@@ -39,6 +39,14 @@ import threading
 import time
 import urllib.parse
 
+# Пуши — соседний модуль push.py. Импорт мягкий: если файла нет или в нём
+# ошибка, сервер обязан подняться и работать, просто без уведомлений.
+try:
+    import push as push_module
+except Exception as _push_err:      # noqa: BLE001
+    push_module = None
+    print('push: модуль не загружен:', _push_err)
+
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'api')
 AUTH_FILE = os.environ.get('IRFAN_AUTH_FILE', '/etc/irfan/auth.json')
 # Персональные учётки устазов и данные публикации эфира — рядом с auth.json,
@@ -67,6 +75,11 @@ REPORTS = os.path.join(ROOT, 'reports.json')
 CRASHES = os.path.join(ROOT, 'crashes.json')
 # Выданные токены — тоже СОСЕДНИЙ файл: внутри api/ он раздавался бы по HTTP.
 TOKENS = os.path.join(os.path.dirname(ROOT), 'tokens.json')
+# Переписка с поддержкой — ВНЕ каталога api/. Внутри него любой файл
+# скачивается по прямой ссылке, а здесь личная переписка учеников.
+SUPPORT_CHAT = os.path.join(os.path.dirname(ROOT), 'support-chat.json')
+_MAX_CHAT_MSGS = 200        # на одну переписку
+_MAX_CHAT_THREADS = 2000
 # Слепки прогресса учеников. Каталог СОСЕДНИЙ с api/ и это здесь не мелочь:
 # имя файла выводится из номера телефона, то есть внутри ROOT любой желающий
 # скачивал бы чужую историю, просто перебирая номера. Имя всё равно хешируем —
@@ -122,6 +135,33 @@ _PROTECTED_GET = ('/users.json', '/redemptions.json', '/access.json',
 # Данные публикации эфира — любому вошедшему устазу, это его рабочий ключ.
 _AUTHED_GET = ('/stream.json',)
 
+# Что отдаётся БЕЗ пароля. Всё остальное с расширением .json требует его —
+# см. проверку в do_GET.
+#
+# Раньше список был обратный: перечислялись закрытые файлы, а неназванное
+# раздавалось всем. При таком порядке любой новый файл в api/ оказывался
+# публичным по умолчанию, и заметить это можно было только вспомнив о нём.
+# Теперь наоборот: забыть внести файл в этот список — значит закрыть его,
+# а не открыть.
+_PUBLIC_GET = (
+    '/status.json',      # идёт ли эфир
+    '/courses.json',     # каталог курсов
+    '/teachers.json',    # реестр устазов
+    '/news.json',        # лента новостей
+    '/azkar.json',       # азкары
+    '/comments.json',    # чат эфира
+    '/support.json',     # контакты поддержки
+    '/books.json',       # каталог книг
+    # Черновики модерации. Открыты не по замыслу, а потому что выпущенное
+    # приложение устаза читает их без авторизации: закрыть сейчас — сломать
+    # кабинет у тех, кто уже поставил обновление из магазина. Содержимое
+    # некритично (названия курсов и ссылки на уроки, сами уроки и так
+    # раздаются открыто). Закрыть вместе со следующим выпуском приложения,
+    # где эти запросы пойдут с токеном устаза.
+    '/news_pending.json',
+    '/azkar_pending.json',
+)
+
 # Что можно писать устазу: только заявки на модерацию и загрузки.
 _USTAZ_WRITABLE = ('/courses_pending.json', '/news_pending.json',
                    '/azkar_pending.json')
@@ -132,12 +172,13 @@ _PENDING_RE = re.compile(r'^/courses_pending_[0-9a-f]{6,32}\.json$')
 
 # Каталог наград — источник истины для стоимости (клиенту не доверяем).
 SHOP_ITEMS = {
+    'course': 1000,
+    # Вещи из приложения убраны, но id оставлены НАМЕРЕННО: по ним приходят
+    # уже выданные коды. Удалишь — старый код перестанет опознаваться, и
+    # человек с ним останется ни с чем.
     'tasbih': 500,
     'book': 700,
     'mat': 1000,
-    # Скидка на курсы убрана из приложения (цифровой товар мимо встроенных
-    # покупок Apple), но id оставлен: по нему приходят уже выданные коды.
-    'course': 1000,
 }
 MAX_COINS = 1000
 COINS_PER_PRAYER = 5
@@ -173,6 +214,18 @@ RATE_AUTH_FAIL = 10     # неудачные попытки авторизаци
 # Кадры-превью: панель открывает список из двух сотен файлов, и браузер
 # просит их пачками. Дорогая часть всё равно упирается в очередь ffmpeg.
 RATE_THUMB = 300
+# Пинги зрителей эфира. Лимит НАМЕРЕННО большой: он считается по адресу, а
+# мобильные операторы прячут за одним адресом множество абонентов. При общем
+# лимите в 20 пять учеников с одной вышки исчерпали бы его за минуту, и
+# счётчик перестал бы работать ровно там, где он нужен.
+RATE_PING = 600
+# Регистрация пуш-токена: происходит раз за запуск приложения, но за одним
+# адресом оператора может оказаться много учеников сразу.
+RATE_PUSH = 300
+# Чат с поддержкой. Свой лимит по той же причине, что у пингов эфира: пока
+# экран открыт, приложение спрашивает сервер о новых сообщениях, и при общем
+# лимите в 20 трёх учеников с одной вышки хватило бы, чтобы чат замолчал.
+RATE_SUPPORT = 300
 
 _hits = {}              # (ключ, ip) -> [метки времени]
 _rate_lock = threading.Lock()
@@ -476,7 +529,7 @@ _PUT_ALLOWED = ('/courses.json', '/news.json', '/azkar.json',
                 '/courses_pending.json', '/news_pending.json',
                 '/azkar_pending.json', '/users.json', '/admin.json',
                 '/status.json', '/live-title.txt', '/teachers.json',
-                '/support.json')
+                '/support.json', '/books.json')
 
 
 def _put_allowed(path):
@@ -568,6 +621,434 @@ def _add_comment(name, text):
         with open(COMMENTS, 'w', encoding='utf-8') as f:
             json.dump(items, f, ensure_ascii=False)
     return item
+
+
+def _load_chat():
+    d = _read_json(SUPPORT_CHAT, {})
+    return d if isinstance(d, dict) else {}
+
+
+def _chat_thread(store, student):
+    t = store.get(student)
+    if not isinstance(t, dict):
+        t = {'student': student, 'messages': [], 'updated': 0,
+             'unreadForStaff': 0, 'unreadForUser': 0}
+        store[student] = t
+    t.setdefault('messages', [])
+    return t
+
+
+def _chat_append(student, sender, text, name=''):
+    """Добавляет сообщение в переписку ученика с поддержкой.
+
+    `sender` — 'user' или 'staff'. Непрочитанное считаем для ПРОТИВОПОЛОЖНОЙ
+    стороны: иначе счётчик в панели рос бы от собственных же ответов.
+    """
+    text = _mask_profanity((text or '').strip()[:2000])
+    if not text or sender not in ('user', 'staff'):
+        return None
+    now = int(time.time() * 1000)
+    with _lock:
+        store = _load_chat()
+        t = _chat_thread(store, student)
+        if name:
+            t['name'] = name[:60]
+        msg = {'id': now, 'from': sender, 'text': text, 'ts': now}
+        if t['messages'] and int(t['messages'][-1].get('id', 0)) >= msg['id']:
+            msg['id'] = int(t['messages'][-1]['id']) + 1
+        t['messages'].append(msg)
+        t['messages'] = t['messages'][-_MAX_CHAT_MSGS:]
+        t['updated'] = now
+        if sender == 'user':
+            t['unreadForStaff'] = int(t.get('unreadForStaff') or 0) + 1
+        else:
+            t['unreadForUser'] = int(t.get('unreadForUser') or 0) + 1
+        # Потолок на число переписок: без него забытый ботами эндпоинт
+        # разросся бы до размеров диска. Выбрасываем самые старые по дате.
+        if len(store) > _MAX_CHAT_THREADS:
+            extra = sorted(store.items(), key=lambda kv: kv[1].get('updated', 0))
+            for k, _ in extra[:len(store) - _MAX_CHAT_THREADS]:
+                store.pop(k, None)
+        _write_private(SUPPORT_CHAT, store)
+    return msg
+
+
+def _student_by_key(data):
+    """Опознаёт ученика по ключу устройства. Возвращает его номер или None.
+
+    Одного номера мало: по нему любой прохожий читал бы чужую переписку
+    и выдавал бы себя за него в рейтинге.
+    Правила те же, что у профиля (см. [_student_ok]) — секрет живёт в
+    Keychain телефона, сервер хранит только его хеш.
+    """
+    ident = _identity(data)
+    if not ident:
+        return None
+    got = _auth_key(data.get('secret'))
+    if not got:
+        return None
+    with _lock:
+        users = _load_users()
+        rec = _find_user(users, ident)
+        if rec is None:
+            return None
+        have = rec.get('authKey')
+        if have:
+            return ident if secrets.compare_digest(got, have) else None
+        # Запись без ключа — закрепляем за этим устройством, как и в профиле.
+        rec['authKey'] = got
+        _save_users(users)
+    return ident
+
+
+def _chat_read(data):
+    """Переписка ученика. Его же обращение и отмечает её прочитанной."""
+    ident = _student_by_key(data)
+    if ident is None:
+        return 403, {'error': 'forbidden'}
+    with _lock:
+        store = _load_chat()
+        t = _chat_thread(store, ident)
+        if t.get('unreadForUser'):
+            t['unreadForUser'] = 0
+            _write_private(SUPPORT_CHAT, store)
+        msgs = list(t.get('messages') or [])
+    return 200, {'messages': msgs}
+
+
+def _chat_unread(data):
+    """Сколько ответов поддержки ученик ещё не видел. Ничего не сбрасывает.
+
+    Отдельно от истории, потому что история отмечает переписку прочитанной:
+    спроси приложение счётчик через неё — и он обнулялся бы сам собой ещё до
+    того, как человек открыл экран переписки.
+    """
+    ident = _student_by_key(data)
+    if ident is None:
+        return 403, {'error': 'forbidden'}
+    t = _load_chat().get(ident)
+    n = int(t.get('unreadForUser') or 0) if isinstance(t, dict) else 0
+    return 200, {'unread': n}
+
+
+def _push_support_reply(student, text):
+    """Уведомляет ученика об ответе поддержки — только на ЕГО телефоны.
+
+    Токены пушей хранятся с ключом устройства, а в реестре учеников — хеш
+    того же ключа. Совпадение хешей и есть «это телефон этого ученика»;
+    номер телефона для адресации не годится, он у токена не записан.
+
+    Уходит в отдельный поток: APNs отвечает секундами, и панель не должна
+    ждать Apple, чтобы показать «ответ отправлен».
+    """
+    if push_module is None:
+        return
+    rec = _find_user(_load_users(), student)
+    key = (rec or {}).get('authKey')
+    if not key:
+        return
+    preview = text if len(text) <= 120 else text[:117] + '…'
+
+    def _go():
+        try:
+            push_module.send(
+                'Ответ поддержки', preview, screen='support',
+                only=lambda r: secrets.compare_digest(
+                    _auth_key(r.get('device')), key),
+                urgent=False)
+        except Exception as e:      # noqa: BLE001 — ответ уже сохранён
+            print('push support reply:', e, flush=True)
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def _chat_send(data):
+    ident = _student_by_key(data)
+    if ident is None:
+        return 403, {'error': 'forbidden'}
+    msg = _chat_append(ident, 'user', data.get('text'),
+                       name=(data.get('name') or ''))
+    if msg is None:
+        return 400, {'error': 'empty'}
+    return 201, msg
+
+
+def _chat_threads():
+    """Сводка переписок для панели: без текстов, только кто и сколько ждёт."""
+    store = _load_chat()
+    out = []
+    for student, t in store.items():
+        msgs = t.get('messages') or []
+        last = msgs[-1] if msgs else {}
+        out.append({
+            'student': student,
+            'name': t.get('name', ''),
+            'updated': t.get('updated', 0),
+            'unread': int(t.get('unreadForStaff') or 0),
+            'lastText': (last.get('text') or '')[:120],
+            'lastFrom': last.get('from', ''),
+            'count': len(msgs),
+        })
+    out.sort(key=lambda x: -x['updated'])
+    return 200, {'threads': out}
+
+
+def _chat_staff_read(student):
+    student = _norm_phone(student) or (student or '').strip()[:120]
+    if not student:
+        return 400, {'error': 'bad student'}
+    with _lock:
+        store = _load_chat()
+        t = _chat_thread(store, student)
+        if t.get('unreadForStaff'):
+            t['unreadForStaff'] = 0
+            _write_private(SUPPORT_CHAT, store)
+        msgs = list(t.get('messages') or [])
+    return 200, {'student': student, 'messages': msgs}
+
+
+def _chat_staff_reply(data):
+    student = _norm_phone(data.get('student')) or \
+        (data.get('student') or '').strip()[:120]
+    if not student:
+        return 400, {'error': 'bad student'}
+    msg = _chat_append(student, 'staff', data.get('text'))
+    if msg is None:
+        return 400, {'error': 'empty'}
+    _push_support_reply(student, msg['text'])
+    return 201, msg
+
+
+# ——— Книги ———
+#
+# Каталог — books.json в api/, публичный: книги открыты всем, в том числе
+# без регистрации, как Коран и азкары. Правит его только админ из панели.
+# Сами PDF и обложки лежат в uploads/ рядом с уроками.
+
+def _book_files():
+    """Имена файлов (PDF и обложек), на которые ссылается каталог книг.
+
+    Нужны раздаче uploads/: когда включены подписанные ссылки, урок без
+    подписи не отдаётся. Книги же бесплатны и открыты всем — просить на
+    каждую обложку подпись значило бы десяток лишних запросов на экран
+    списка. Поэтому файлы из каталога книг идут без подписи, а всё прочее
+    в uploads/ по-прежнему под замком.
+    """
+    cat = _read_json(os.path.join(ROOT, 'books.json'), {})
+    names = set()
+    for b in (cat.get('items') or []) if isinstance(cat, dict) else []:
+        if not isinstance(b, dict):
+            continue
+        for k in ('file', 'cover'):
+            v = safe_upload_name(str(b.get(k) or '').rsplit('/', 1)[-1])
+            if v:
+                names.add(v)
+    return names
+
+
+# ——— Соревнование и приглашения ———
+#
+# Очки НЕ равны кошельку. Кошелёк зажат потолком в MAX_COINS (1000) — это
+# верно для трат, но для рейтинга бесполезно: все, кто пользуется
+# приложением дольше месяца, упёрлись бы в одно число и встали наравне.
+# Кошелёк ещё и уменьшается при выкупе награды, то есть человек терял бы
+# место в таблице за то, что потратил заработанное.
+#
+# Поэтому очки — это заработанное за всю историю, без потолка кошелька и без
+# вычета трат. Защита от накрутки та же, что у коинов: больше, чем физически
+# возможно за время жизни аккаунта, не засчитываем.
+_REF_BONUS = 100          # очков пригласившему за одного прижившегося друга
+_REF_MIN_PRAYERS = 25     # с какого порога друг считается прижившимся
+_REF_MAX_REWARDED = 20    # за скольких друзей максимум начисляем
+_REF_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'   # без 0/O и 1/I/L
+_TOP_LIMIT = 100
+
+
+def _rating_points(rec, now=None):
+    """Очки ученика для рейтинга (без бонуса за приглашения).
+
+    Считаем НЕ по присланному числу, а от намазов: они хранятся на сервере
+    и уже зажаты потолком «пять в сутки за время жизни аккаунта». Зикры
+    добавляем сверху, но лишь столько, сколько могло набраться за те же
+    сутки, — остальное отбрасываем.
+
+    Почему не доверять `score` целиком. Приложение считает статистику само,
+    и число можно подменить. Прежний вариант зажимал его только временем:
+    аккаунт, заведённый полгода назад и ни разу не открытый, мог объявить
+    двадцать пять тысяч очков и встать первым. Теперь, чтобы подняться,
+    придётся накрутить сами намазы — а они на виду и у админа в панели.
+
+    Полной защиты тут быть не может: отметку «прочитал» ставит человек в
+    своём телефоне, проверить её нечем. Но потолок и привязка к намазам
+    делают накрутку заметной, а не бесплатной.
+    """
+    now = now or int(time.time() * 1000)
+    prayers = int(rec.get('prayersRead') or 0)
+    days = max(1, _max_plausible_prayers(rec, now) // 5)
+    from_prayers = prayers * COINS_PER_PRAYER
+    # Сколько за те же сутки можно набрать зикрами — остаток суточного
+    # потолка после пяти намазов.
+    zikr_room = days * max(0, MAX_COINS_PER_DAY - 5 * COINS_PER_PRAYER)
+    reported = int(rec.get('score') or 0)
+    from_zikr = max(0, min(reported - from_prayers, zikr_room))
+    return from_prayers + from_zikr
+
+
+def _ref_code_for(rec, taken):
+    """Код приглашения ученика. Создаётся один раз и больше не меняется."""
+    code = (rec.get('refCode') or '').strip().upper()
+    if code:
+        return code
+    for _ in range(50):
+        code = ''.join(secrets.choice(_REF_ALPHABET) for _ in range(6))
+        if code not in taken:
+            rec['refCode'] = code
+            return code
+    return ''
+
+
+def _ref_bonus(ident, users, now):
+    """Бонус пригласившему: по очкам за каждого друга, который прижился.
+
+    Порог обязателен. Без него достаточно завести двадцать пустых аккаунтов
+    по своим же кодам и подняться в таблице, ничего не прочитав.
+
+    Бонус идёт ТОЛЬКО в очки рейтинга и не попадает в кошелёк: иначе
+    приглашения превратились бы в способ печатать коины, а вся защита
+    от накрутки считает именно кошелёк.
+    """
+    good = 0
+    for u in users:
+        if u.get('invitedBy') != ident:
+            continue
+        if int(u.get('prayersRead') or 0) >= _REF_MIN_PRAYERS:
+            good += 1
+    return min(good, _REF_MAX_REWARDED) * _REF_BONUS, good
+
+
+def _circle_of(ident, users):
+    """«Друзья» — те, с кем человек связан приглашением.
+
+    Отдельного списка друзей нет намеренно: заявки, подтверждения и отказы —
+    это целая подсистема, а смысл здесь в том, чтобы соревноваться со своими.
+    Свои — это тот, кто пригласил тебя, те, кого пригласил ты, и те, кого
+    пригласил тот же человек (то есть позванные вместе с тобой).
+    """
+    me = next((u for u in users if _same_student(u, ident)
+               or u.get('phone') == ident), None)
+    inviter = (me or {}).get('invitedBy')
+    circle = {ident}
+    if inviter:
+        circle.add(inviter)
+    for u in users:
+        p = u.get('phone')
+        if not p:
+            continue
+        if u.get('invitedBy') == ident:
+            circle.add(p)
+        if inviter and u.get('invitedBy') == inviter:
+            circle.add(p)
+    return circle
+
+
+def _rating_row(u, ident, now, users):
+    bonus, _ = _ref_bonus(u.get('phone'), users, now)
+    return {
+        # Номер телефона НЕ отдаём никогда: в таблице он не нужен, а утечь
+        # может. Опознать себя человек может по метке `me`.
+        'name': (u.get('name') or '').strip()[:40] or 'Ученик',
+        'points': _rating_points(u, now) + bonus,
+        'streak': int(u.get('streak') or 0),
+        'prayers': int(u.get('prayersRead') or 0),
+        'me': u.get('phone') == ident,
+    }
+
+
+def _rating(data):
+    ident = _student_by_key(data)
+    if ident is None:
+        return 403, {'error': 'forbidden'}
+    now = int(time.time() * 1000)
+    with _lock:
+        users = _load_users()
+        taken = {(u.get('refCode') or '') for u in users}
+        me = _find_user(users, ident)
+        if me is None:
+            return 404, {'error': 'no user'}
+        code = _ref_code_for(me, taken)
+        _save_users(users)
+        users = list(users)
+
+    # Пары «запись — строка для показа». Телефон нужен для отбора (скрытые,
+    # круг друзей), но в саму строку он не попадает: наружу уходит только
+    # имя, очки и серия.
+    pairs = [(u, _rating_row(u, ident, now, users)) for u in users
+             if u.get('phone') and not u.get('blocked')]
+    pairs.sort(key=lambda pr: (-pr[1]['points'], -pr[1]['streak'],
+                               pr[1]['name']))
+
+    # Место считаем по ВСЕМ, даже если человек скрылся из таблицы: он всё
+    # равно соревнуется, просто его строки не видно остальным.
+    my_rank = next((i + 1 for i, (_, r) in enumerate(pairs) if r['me']), None)
+    my_points = next((r['points'] for _, r in pairs if r['me']), 0)
+
+    top = [{**r, 'rank': i + 1}
+           for i, (_, r) in enumerate(
+               [pr for pr in pairs if not pr[0].get('hideInRating')][:_TOP_LIMIT])]
+
+    circle = _circle_of(ident, users)
+    friends = [{**r, 'rank': i + 1}
+               for i, (u, r) in enumerate(
+                   [pr for pr in pairs if pr[0].get('phone') in circle])]
+
+    bonus, invited_good = _ref_bonus(ident, users, now)
+    invited_all = sum(1 for u in users if u.get('invitedBy') == ident)
+    return 200, {
+        'top': top,
+        'me': {'rank': my_rank, 'points': my_points,
+               'total': len(pairs), 'hidden': bool(me.get('hideInRating'))},
+        'friends': friends,
+        'referral': {
+            'code': code,
+            'invited': invited_all,
+            'counted': invited_good,
+            'bonus': bonus,
+            'perFriend': _REF_BONUS,
+            'minPrayers': _REF_MIN_PRAYERS,
+        },
+    }
+
+
+def _apply_referral(data):
+    """Ученик вводит код пригласившего. Один раз и только до первых очков."""
+    ident = _student_by_key(data)
+    if ident is None:
+        return 403, {'error': 'forbidden'}
+    code = ''.join(ch for ch in str(data.get('code') or '').upper()
+                   if ch in _REF_ALPHABET)[:6]
+    if len(code) != 6:
+        return 400, {'error': 'bad code'}
+    with _lock:
+        users = _load_users()
+        me = _find_user(users, ident)
+        if me is None:
+            return 404, {'error': 'no user'}
+        if me.get('invitedBy'):
+            return 409, {'error': 'already invited'}
+        host = next((u for u in users
+                     if (u.get('refCode') or '').upper() == code), None)
+        if host is None:
+            return 404, {'error': 'unknown code'}
+        if host.get('phone') == ident:
+            return 409, {'error': 'self'}
+        # Взаимные приглашения запрещаем: иначе двое разом получают бонус
+        # друг за друга, ничего не приведя.
+        if host.get('invitedBy') == ident:
+            return 409, {'error': 'mutual'}
+        me['invitedBy'] = host.get('phone')
+        me['invitedAt'] = int(time.time() * 1000)
+        _save_users(users)
+    return 200, {'ok': True, 'inviter': (host.get('name') or '').strip()[:40]}
 
 
 def _identity(data):
@@ -994,6 +1475,65 @@ def _revoke_access(data):
     return 200, {'ok': True}
 
 
+# ——— Счётчик зрителей эфира ———
+#
+# Считаем по УСТРОЙСТВАМ, а не по адресам. Мобильные операторы в Кыргызстане
+# прячут абонентов за общим адресом: по логам сорок зрителей с мобильного
+# интернета выглядели бы как три-четыре, и число врало бы в разы. Такой
+# счётчик хуже, чем никакого.
+#
+# Живёт только в памяти. Это сиюминутная величина, переживать перезапуск ей
+# незачем, а на диске она стала бы ещё одним файлом с опознавателями
+# устройств. Сам ключ устройства не храним даже в памяти — только его хеш.
+VIEWER_TTL_S = 45       # не пинговал дольше — считаем, что ушёл
+_viewers = {}           # хеш ключа устройства -> время последнего пинга
+_viewers_peak = 0
+_viewers_lock = threading.Lock()
+
+
+def _viewer_id(key):
+    """Короткий хеш ключа устройства — по нему сам ключ не восстановить."""
+    return hashlib.sha256(str(key).encode('utf-8')).hexdigest()[:16]
+
+
+def _viewers_count(now):
+    """Сколько устройств пинговало за последние VIEWER_TTL_S секунд.
+
+    Заодно чистит просроченные записи — отдельная уборка не нужна, счётчик
+    и так спрашивают раз в несколько секунд.
+    """
+    for k in [k for k, t in _viewers.items() if now - t > VIEWER_TTL_S]:
+        _viewers.pop(k, None)
+    return len(_viewers)
+
+
+def _viewer_ping(key):
+    """Отметить зрителя и вернуть текущее число смотрящих."""
+    global _viewers_peak
+    key = str(key or '')[:200]
+    if not key:
+        return 0
+    now = time.time()
+    with _viewers_lock:
+        _viewers[_viewer_id(key)] = now
+        n = _viewers_count(now)
+        if n > _viewers_peak:
+            _viewers_peak = n
+        return n
+
+
+def _viewers_stats(reset_peak=False):
+    """Текущее и наибольшее число зрителей. Сброс пика зовёт live-on.sh
+    при старте эфира, чтобы пик относился к этой трансляции, а не ко всем."""
+    global _viewers_peak
+    with _viewers_lock:
+        n = _viewers_count(time.time())
+        peak = max(_viewers_peak, n)
+        if reset_peak:
+            _viewers_peak = n
+        return {'viewers': n, 'peak': peak}
+
+
 # ——— Подтверждение телефона кодом ———
 
 def _load_verify():
@@ -1037,15 +1577,22 @@ def _request_code(data):
         # Имя из реестра — чтобы в панели было видно, КОГО спрашивают. Код
         # выдаёт человек, и один номер в столбце ему ничего не говорит.
         rec = _find_user(_load_users(), phone)
+        # rid — опознаватель ЭТОГО запроса, известный только приложению,
+        # которое его сделало. По нему приложение потом спрашивает, не
+        # подтвердил ли админ номер вручную. Без rid любой мог бы опрашивать
+        # чужой номер и перехватить подтверждение в момент выдачи.
         entry = {'phone': phone, 'code': code,
                  'name': (rec or {}).get('name', ''),
+                 'rid': secrets.token_urlsafe(18),
                  'createdAt': now, 'expiresAt': now + CODE_TTL_MS,
-                 'attempts': 0, 'used': False, 'delivered': False}
+                 'attempts': 0, 'used': False, 'delivered': False,
+                 'approved': False}
         entry['delivered'] = _send_code(phone, code)
         items.append(entry)
         _save_verify(items)
     # Сам код в ответ НЕ отдаём: иначе подтверждение не значит ничего.
     return 201, {'sent': True, 'delivered': entry['delivered'],
+                 'requestId': entry['rid'],
                  'expiresAt': entry['expiresAt']}
 
 
@@ -1070,20 +1617,101 @@ def _confirm_code(data):
             _save_verify(items)
             left = CODE_MAX_ATTEMPTS - entry['attempts']
             return 403, {'error': 'wrong code', 'attemptsLeft': max(0, left)}
-        entry['used'] = True
-        entry['confirmedAt'] = now
-        # Разрешение на перенос аккаунта. Выдаём всегда, а не только когда
+        # Разрешение на перенос аккаунта выдаём всегда, а не только когда
         # запись есть: иначе ответ сервера говорил бы постороннему, заведён
         # ли аккаунт на этом номере.
-        ticket = secrets.token_urlsafe(24)
-        entry['ticket'] = ticket
-        entry['ticketExpires'] = now + RESTORE_TICKET_TTL_MS
-        _save_verify(items)
+        ticket = _issue_ticket(entry, items, phone, now)
+    return 200, {'verified': True, 'restoreTicket': ticket}
+
+
+def _issue_ticket(entry, items, phone, now):
+    """Закрывает запись подтверждения и выдаёт билет на перенос аккаунта.
+
+    Общая часть для двух путей: человек ввёл код сам или админ подтвердил
+    номер кнопкой в панели. Итог обязан быть одинаковым, поэтому вынесено
+    сюда, а не написано дважды.
+    """
+    entry['used'] = True
+    entry['confirmedAt'] = now
+    ticket = secrets.token_urlsafe(24)
+    entry['ticket'] = ticket
+    entry['ticketExpires'] = now + RESTORE_TICKET_TTL_MS
+    _save_verify(items)
+    users = _load_users()
+    rec = _find_user(users, phone)
+    if rec is not None:
+        rec['verified'] = True
+        _save_users(users)
+    return ticket
+
+
+def _approve_code(data):
+    """Админ подтверждает номер вручную, без кода.
+
+    Автоотправка кодов не подключена, и до сих пор единственным путём было
+    продиктовать шесть цифр по телефону. Теперь админ, который и так видит
+    запрос в панели, может подтвердить его одной кнопкой — человеку на
+    другом конце ничего вводить не нужно.
+    """
+    phone = _norm_phone(data.get('phone'))
+    if not phone:
+        return 400, {'error': 'bad phone'}
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_verify()
+        # Живой запрос кода, если он есть. Отмечаем его одобренным, чтобы у
+        # ученика, который прямо сейчас ждёт на экране кода, экран закрылся
+        # сам: приложение опрашивает сервер и увидит отметку.
+        entry = next((x for x in reversed(items)
+                      if x.get('phone') == phone and not x.get('used')
+                      and now <= int(x.get('expiresAt') or 0)), None)
+        if entry is not None:
+            entry['approved'] = True
+            entry['approvedAt'] = now
+            _save_verify(items)
+        # Но подтверждаем номер и БЕЗ живого запроса.
+        #
+        # Раньше без него ответом был 404: код живёт час, а админ смотрит
+        # панель когда придётся — к этому времени запрос успевал протухнуть,
+        # и подтвердить номер было нечем. Кнопки в списке кодов у истёкшего
+        # запроса просто не было, и со стороны это выглядело так, будто
+        # ничего не нажимается.
         users = _load_users()
         rec = _find_user(users, phone)
-        if rec is not None:
-            rec['verified'] = True
-            _save_users(users)
+        if rec is None:
+            return 404, {'error': 'no user'}
+        rec['verified'] = True
+        _save_users(users)
+    return 200, {'approved': True, 'waiting': entry is not None}
+
+
+def _poll_code(data):
+    """Приложение спрашивает: не подтвердил ли админ номер вручную.
+
+    Отвечаем только тому, кто предъявил rid своего же запроса.
+    """
+    phone = _norm_phone(data.get('phone'))
+    rid = str(data.get('requestId') or '')
+    if not phone or not rid:
+        return 400, {'error': 'bad request'}
+    now = int(time.time() * 1000)
+    with _lock:
+        items = _load_verify()
+        entry = next((x for x in reversed(items)
+                      if x.get('phone') == phone
+                      and secrets.compare_digest(str(x.get('rid') or ''), rid)),
+                     None)
+        if entry is None:
+            return 404, {'error': 'no code'}
+        if entry.get('used'):
+            # Уже подтверждено этим же приложением — отдаём тот же билет.
+            return 200, {'verified': True,
+                         'restoreTicket': entry.get('ticket', '')}
+        if not entry.get('approved'):
+            return 200, {'verified': False}
+        if now > int(entry.get('expiresAt') or 0):
+            return 410, {'error': 'expired'}
+        ticket = _issue_ticket(entry, items, phone, now)
     return 200, {'verified': True, 'restoreTicket': ticket}
 
 
@@ -1185,12 +1813,20 @@ def _ticket_ok(phone, ticket, now):
 def _restore_account(data):
     """Отдаёт аккаунт новому телефону.
 
-    Два пути внутрь:
+    Пути внутрь, по убыванию надёжности:
       * ключ устройства уже записан в реестре — это тот же телефон после
-        переустановки (Keychain её переживает, а SharedPreferences нет), и
-        код тут спрашивать не за что;
-      * одноразовое разрешение после подтверждения номера — это новый
-        телефон, и запись переезжает на него.
+        переустановки (Keychain её переживает, а SharedPreferences нет),
+        спрашивать тут не за что;
+      * доказательство пароля совпало с записанным — человек ввёл свой
+        номер и пароль на новом телефоне, и этого достаточно;
+      * пароля в реестре ещё нет (запись прежних сборок) — принимаем
+        присланный и запоминаем, см. ниже;
+      * одноразовое разрешение после кода — оставлено как запасной путь для
+        того, кто пароль забыл: код называет устаз.
+
+    Раньше единственным путём с нового телефона был код: автоотправки нет,
+    его диктовал устаз вручную, и человек ждал. По решению владельца вход
+    идёт по номеру и паролю сразу.
 
     Переезд забирает право писать у прежнего устройства: два телефона с одной
     историей разошлись бы, и чей слепок последний, тот и затёр бы остальные.
@@ -1200,6 +1836,7 @@ def _restore_account(data):
         return 400, {'error': 'bad phone'}
     got = _auth_key(data.get('secret'))
     ticket = str(data.get('ticket') or '')[:64]
+    proof = _pw_proof(data.get('pass'))
     now = int(time.time() * 1000)
     with _lock:
         users = _load_users()
@@ -1218,7 +1855,23 @@ def _restore_account(data):
                 # _ticket_ok его гасит, и заведомо безнадёжная попытка
                 # сжигала бы бумажку, за которой человек ходил к устазу.
                 return 400, {'error': 'no device key'}
-            if not _ticket_ok(ident, ticket, now):
+            stored = rec.get('pw')
+            if proof and stored:
+                if not _pw_verify(proof, stored):
+                    return 403, {'error': 'bad password'}
+            elif proof:
+                # Пароля в реестре нет: запись завело приложение, которое его
+                # ещё не присылало. Отказать нельзя — человек остался бы без
+                # своей истории; поэтому принимаем первый присланный и с этой
+                # минуты запись закрыта паролем.
+                #
+                # ЦЕНА ПОНЯТНА И ПРИНЯТА ВЛАДЕЛЬЦЕМ: пока пароль не записан,
+                # такую запись может забрать любой, кто знает номер. Отметку
+                # ставим, чтобы в панели было видно, кого забрали вслепую.
+                rec['pw'] = _pw_hash(proof)
+                rec['pwSetAt'] = now
+                rec['claimedBlind'] = True
+            elif not _ticket_ok(ident, ticket, now):
                 return 403, {'error': 'forbidden'}
             rec['authKey'] = got
             rec['movedAt'] = now
@@ -1227,7 +1880,8 @@ def _restore_account(data):
         rec = dict(rec)     # дальше читаем уже вне замка
     return 200, {
         'profile': {k: rec.get(k) for k in (
-            'name', 'gender', 'age', 'city', 'verified', 'accountCreatedAt',
+            'name', 'gender', 'age', 'birthDate', 'city', 'verified',
+            'accountCreatedAt',
             'prayersRead', 'streak', 'coins', 'spent', 'balance')},
         'access': _access_for(ident),
         # Потраченное берётся из реестра, а не из слепка: слепок мог быть
@@ -1380,6 +2034,22 @@ def _auth_key(secret):
     return hashlib.sha256(('irfan-device:' + s).encode()).hexdigest()
 
 
+def _pw_proof(v):
+    """Доказательство пароля, присланное приложением, — или пустая строка.
+
+    Приложение считает PBKDF2 от пароля с солью из номера (AuthService.
+    makeProof) и шлёт результат сюда. Сам пароль серверу не достаётся: в
+    файле оседает PBKDF2 уже поверх этого значения.
+
+    Длину и алфавит проверяем строго: в `pw` не должно попасть ничего,
+    кроме шестнадцатеричной строки ожидаемого размера.
+    """
+    h = str(v or '').strip().lower()
+    if not 32 <= len(h) <= 128 or len(h) % 2:
+        return ''
+    return h if all(c in '0123456789abcdef' for c in h) else ''
+
+
 def _student_ok(rec, data):
     """Имеет ли запрос право менять эту запись ученика.
 
@@ -1466,6 +2136,21 @@ def _upsert_user(data):
         rec['name'] = name
         rec['gender'] = gender
         rec['age'] = age
+        # Дата рождения. Хранится строкой ГГГГ-ММ-ДД и нужна ровно для одного:
+        # вернуть её человеку при переносе аккаунта на новый телефон. Без неё
+        # возраст после переноса снова застыл бы числом.
+        # Очки рейтинга: заработанное за всю историю, без потолка кошелька.
+        # Присылает клиент, сервер режет потолком правдоподобия — см.
+        # _rating_points.
+        try:
+            rec['score'] = max(0, min(10**7, int(data.get('score') or 0)))
+        except (ValueError, TypeError):
+            pass
+        if isinstance(data.get('hideInRating'), bool):
+            rec['hideInRating'] = data['hideInRating']
+        b = (data.get('birthDate') or '').strip()[:10]
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', b or ''):
+            rec['birthDate'] = b
         # Номер — он же опознаватель, менять его через этот вызов нельзя.
         rec.setdefault('phone', ident)
         if city:
@@ -1485,10 +2170,20 @@ def _upsert_user(data):
         rec.setdefault('spent', 0)
         rec['balance'] = max(0, _earned_coins(rec, now) - int(rec.get('spent') or 0))
         rec.setdefault('verified', False)
+        # Доказательство пароля — чтобы человек вошёл в свой аккаунт с нового
+        # телефона по номеру и паролю (см. _restore_account). Пишем только
+        # здесь: сюда попадают уже после _student_ok, то есть с устройства
+        # владельца. Сменил пароль — приходит другое значение, обновляем.
+        proof = _pw_proof(data.get('pass'))
+        if proof and not _pw_verify(proof, rec.get('pw') or ''):
+            rec['pw'] = _pw_hash(proof)
+            rec['pwSetAt'] = now
         _save_users(users)
         out = dict(rec)
-    # Ключ устройства наружу не отдаём — он нужен только серверу.
+    # Ключ устройства и хеш пароля наружу не отдаём — они нужны только
+    # серверу. Забыть pop здесь означало бы отдать их каждому приложению.
     out.pop('authKey', None)
+    out.pop('pw', None)
     # Свои доступы к курсам — чтобы приложение сразу знало, что открыто.
     out['access'] = _access_for(ident)
     # Свои сертификаты — тем же ответом: отдельный запрос за ними означал бы
@@ -1821,6 +2516,17 @@ def _media_list():
             continue
         name = (t.get('name') or '').strip()
         _scan(t.get('directions'), f'{name} · ' if name else '')
+    # Книги — туда же: удалить из «Видео» PDF опубликованной книги значило бы
+    # оставить в приложении книгу, которая не скачивается.
+    for name in _book_files():
+        for b in (_read_json(os.path.join(ROOT, 'books.json'), {})
+                  .get('items') or []):
+            if isinstance(b, dict) and name in (
+                    str(b.get('file') or '').rsplit('/', 1)[-1],
+                    str(b.get('cover') or '').rsplit('/', 1)[-1]):
+                used.setdefault(name, []).append(
+                    f"Книга · {b.get('title', '')}")
+                break
     for it in items:
         it['usedIn'] = used.get(it['name'], [])
         # Название урока — запасная подпись: файл уже опубликован, значит
@@ -1876,6 +2582,30 @@ def _set_blocked(data):
         rec['blocked'] = blocked
         _save_users(users)
         return 200, {'student': ident, 'blocked': blocked}
+
+
+def _reset_password(data):
+    """Сбрасывает пароль ученика: следующий вход задаст новый.
+
+    Это и есть «забыли пароль». Кода подтверждения в приложении больше нет,
+    и без такой кнопки человек, забывший пароль, остался бы без своей
+    истории навсегда — сервер сверяет пароль и никого больше не пускает.
+
+    Чистим только `pw`. Запись остаётся за прежним устройством (`authKey`),
+    то есть на своём телефоне человек как пользовался аккаунтом, так и
+    пользуется; а на новом войдёт любым паролем — и тот сразу запишется.
+    """
+    ident = _identity(data)
+    with _lock:
+        users = _load_users()
+        rec = _find_user(users, ident)
+        if rec is None:
+            return 404, {'error': 'no user'}
+        rec.pop('pw', None)
+        rec.pop('pwSetAt', None)
+        rec['pwResetAt'] = int(time.time() * 1000)
+        _save_users(users)
+        return 200, {'student': ident, 'reset': True}
 
 
 def _delete_user(data):
@@ -2342,6 +3072,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split('?')[0].rstrip('/')
+        # Запрет по умолчанию: любой .json, не объявленный открытым, требует
+        # пароля. Черновики каталога у каждого устаза свои (_PENDING_RE) и
+        # пока читаются приложением без авторизации — см. _PUBLIC_GET.
+        if (p.endswith('.json') and p not in _PUBLIC_GET
+                and p not in _PROTECTED_GET and p not in _AUTHED_GET
+                and not _PENDING_RE.match(p)):
+            if self._role_checked() is None:
+                self._deny()
+                return
         # Реестр аккаунтов, доступы и коды (ПДн) — только админ.
         if p in _PROTECTED_GET or p in _AUTHED_GET:
             role = self._role_checked()
@@ -2352,6 +3091,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if role is None or (need_admin and role != 'admin'):
                 self._deny()
                 return
+        if p == '/live/viewers':
+            # ?reset=1 обнуляет пик — это зовёт live-on.sh при старте эфира.
+            reset = 'reset=1' in (self.path.split('?', 1)[1]
+                                  if '?' in self.path else '')
+            self._send_json(200, _viewers_stats(reset_peak=reset))
+            return
         if p == '/media.json':
             self._send_json(200, _media_list())
             return
@@ -2376,8 +3121,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p.startswith('/uploads/') and _media_cfg().get('require_signed'):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             name = p[len('/uploads/'):]
-            if not _media_sig_ok(name, (q.get('exp') or [''])[0],
-                                 (q.get('sig') or [''])[0]) \
+            if name not in _book_files() \
+                    and not _media_sig_ok(name, (q.get('exp') or [''])[0],
+                                          (q.get('sig') or [''])[0]) \
                     and self._role_checked() not in ('admin', 'ustaz'):
                 self._deny(403)
                 return
@@ -2387,6 +3133,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # Ручки без пароля: любой может засыпать реестр, чат и коды.
     _ANON_POST = ('/users', '/comments', '/verify/request', '/verify/confirm',
+                  '/verify/poll', '/rating', '/referral/apply',
                   '/redeem', '/auth/token', '/account/delete',
                   '/account/restore', '/backup',
                   '/comments/report', '/media/link', '/crash')
@@ -2417,6 +3164,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Дальше везде вызывается data.get(...) — на списке или строке
             # это падало бы с 500 вместо внятного отказа.
             self._send_json(400, {'error': 'bad json'})
+            return
+        if p == '/push/register':
+            if not _rate_ok('push', self._ip, RATE_PUSH):
+                self._too_many()
+                return
+            if push_module is None:
+                self._send_json(503, {'error': 'push disabled'})
+                return
+            n = push_module.register(data.get('token'), data.get('device'),
+                                     data.get('platform') or 'ios')
+            if n is None:
+                self._send_json(400, {'error': 'bad token'})
+                return
+            self._send_json(201, {'ok': True})
+            return
+        if p == '/live/ping':
+            # Свой лимит, а не общий анонимный: см. RATE_PING.
+            if not _rate_ok('ping', self._ip, RATE_PING):
+                self._too_many()
+                return
+            # Отвечаем текущим числом зрителей — приложению не нужен
+            # отдельный запрос, чтобы узнать счётчик.
+            self._send_json(200, {'viewers': _viewer_ping(data.get('key'))})
             return
         if p == '/comments':
             # Имя в чате приходит от клиента, и без проверки любой мог бы
@@ -2516,6 +3286,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if p == '/account/restore':
             code, body = _restore_account(data)
+            # Неверный пароль тратит лимит перебора: иначе номера можно было
+            # бы перебирать паролями без всякой цены.
+            if code == 403 and not _rate_ok('authfail', self._ip,
+                                            RATE_AUTH_FAIL):
+                self._too_many()
+                return
             self._send_json(code, body)
             return
         if p == '/auth/token':
@@ -2562,6 +3338,73 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             code, body = _confirm_code(data)
             self._send_json(code, body)
             return
+        # ——— Чат с поддержкой ———
+        #
+        # Ученик обращается БЕЗ пароля: аккаунта на сервере у него нет,
+        # опознаётся он ключом устройства (см. _student_by_key). Поэтому и
+        # чтение переписки идёт POST-ом, а не GET: номер не должен попадать
+        # в адрес запроса и оседать в журналах.
+        # ——— Соревнование ———
+        if p in ('/rating', '/referral/apply'):
+            # Свой лимит: экран рейтинга открывают часто, а за одним адресом
+            # оператора сидит много учеников (та же причина, что у чата).
+            if not _rate_ok('rating', self._ip, RATE_SUPPORT):
+                self._too_many()
+                return
+            code, body = (_rating(data) if p == '/rating'
+                          else _apply_referral(data))
+            self._send_json(code, body)
+            return
+        if p in ('/support/send', '/support/history', '/support/unread'):
+            # Свой лимит, а не общий анонимный: см. RATE_SUPPORT.
+            if not _rate_ok('support', self._ip, RATE_SUPPORT):
+                self._too_many()
+                return
+        if p == '/support/unread':
+            code, body = _chat_unread(data)
+            self._send_json(code, body)
+            return
+        if p == '/support/send':
+            code, body = _chat_send(data)
+            self._send_json(code, body)
+            return
+        if p == '/support/history':
+            code, body = _chat_read(data)
+            self._send_json(code, body)
+            return
+        if p == '/support/threads':
+            if self._role_checked() not in ('admin', 'ustaz'):
+                self._deny()
+                return
+            code, body = _chat_threads()
+            self._send_json(code, body)
+            return
+        if p == '/support/thread':
+            if self._role_checked() not in ('admin', 'ustaz'):
+                self._deny()
+                return
+            code, body = _chat_staff_read(data.get('student'))
+            self._send_json(code, body)
+            return
+        if p == '/support/reply':
+            if self._role_checked() not in ('admin', 'ustaz'):
+                self._deny()
+                return
+            code, body = _chat_staff_reply(data)
+            self._send_json(code, body)
+            return
+        if p == '/verify/poll':
+            code, body = _poll_code(data)
+            self._send_json(code, body)
+            return
+        if p == '/verify/approve':
+            # Подтверждение без кода — право админа, не ученика.
+            if self._role_checked() != 'admin':
+                self._deny()
+                return
+            code, body = _approve_code(data)
+            self._send_json(code, body)
+            return
         if p in ('/media/delete', '/media/folder', '/media/move', '/media/title'):
             if self._role_checked() != 'admin':
                 self._deny()
@@ -2573,11 +3416,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 else _media_move(data))
             self._send_json(code, body)
             return
-        if p in ('/users/flag', '/users/delete'):
+        if p in ('/users/flag', '/users/delete', '/users/resetpass'):
             if self._role_checked() != 'admin':
                 self._deny()
                 return
             code, body = (_set_blocked(data) if p == '/users/flag'
+                          else _reset_password(data)
+                          if p == '/users/resetpass'
                           else _delete_user(data))
             self._send_json(code, body)
             return
@@ -2692,4 +3537,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     port = int(os.environ.get('IRFAN_PORT', '8090'))
-    http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
+    # Слушаем ТОЛЬКО себя. Наружу сервер смотрит через nginx, который
+    # проксирует на 127.0.0.1:8090 и один умеет HTTPS.
+    #
+    # Раньше здесь стоял 0.0.0.0, и тот же самый сервер отвечал по
+    # http://<адрес>:8090 — в обход шифрования. По этому адресу открывалась
+    # и админ-панель, а значит пароль администратора уходил в сеть открытым
+    # текстом всякому, кто слушает канал. Проверено: панель отдавалась,
+    # 110 КБ, код 200.
+    #
+    # Для локальной отладки адрес переопределяется через IRFAN_BIND.
+    bind = os.environ.get('IRFAN_BIND', '127.0.0.1')
+    http.server.ThreadingHTTPServer((bind, port), Handler).serve_forever()

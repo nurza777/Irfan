@@ -2,11 +2,32 @@ import 'dart:async';
 
 import 'package:apivideo_live_stream/apivideo_live_stream.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../services/staff_api.dart';
 import '../../services/comment_service.dart';
+import '../../services/live_service.dart';
 import '../../widgets/glass.dart';
 import '../../theme.dart';
+
+/// Состояние эфира. Раньше здесь был один флаг `_streaming`, но с появлением
+/// переподключения состояний стало четыре, и на флагах логика разъезжалась:
+/// «идёт ли эфир» и «есть ли связь» — разные вопросы, и во время
+/// переподключения ответы на них расходятся.
+enum _LiveState {
+  /// Эфира нет: экран настройки, камера может быть включена для превью.
+  idle,
+
+  /// Отправили startStreaming, ждём подтверждения от сервера.
+  connecting,
+
+  /// Связь есть, поток идёт.
+  live,
+
+  /// Связь потеряна не по воле устаза — пробуем вернуться сами.
+  reconnecting,
+}
 
 /// Эфир: превью камеры, заголовок и кнопка «Начать эфир» (RTMP на сервер).
 class LiveTab extends StatefulWidget {
@@ -16,10 +37,10 @@ class LiveTab extends StatefulWidget {
   State<LiveTab> createState() => _LiveTabState();
 }
 
-class _LiveTabState extends State<LiveTab> {
+class _LiveTabState extends State<LiveTab> with WidgetsBindingObserver {
   ApiVideoLiveStreamController? _controller;
   String? _cameraError;
-  bool _streaming = false;
+  _LiveState _state = _LiveState.idle;
   bool _busy = false;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
@@ -32,6 +53,63 @@ class _LiveTabState extends State<LiveTab> {
   /// открытии кабинета, и приложение просило камеру с микрофоном у устаза,
   /// который зашёл всего лишь поправить название курса.
   bool _cameraOn = false;
+
+  // ── Переподключение ────────────────────────────────────────────────────
+  //
+  // Сервер сворачивает эфир, если данные от телефона не идут 11 секунд
+  // (замерено). Раньше обрыв означал конец трансляции навсегда: обработчик
+  // лишь ставил флаг, и устаз, ведущий урок с телефона на подставке, узнавал
+  // об этом сильно позже. Теперь приложение возвращается само.
+
+  /// Паузы между попытками. Растут, чтобы не молотить сеть впустую, но
+  /// первая короткая — обычные провалы связи длятся считанные секунды.
+  static const _retryDelays = [
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 16),
+    Duration(seconds: 30),
+  ];
+
+  int _retry = 0;
+  Timer? _retryTimer;
+
+  /// Сколько учеников смотрит. Устаз спрашивает сервер, а не отмечается
+  /// сам: иначе он посчитал бы себя зрителем собственного эфира.
+  int _viewers = 0;
+  Timer? _viewersPoll;
+
+  /// Устаз нажал «Завершить эфир». Единственное, что отличает штатный конец
+  /// от обрыва: с точки зрения плагина оба выглядят как onDisconnection.
+  bool _userStopped = false;
+
+  /// Данные публикации кэшируем с первого старта. Перезапрашивать их при
+  /// обрыве нельзя: связи в этот момент как раз и нет, запрос к серверу
+  /// упал бы ровно тогда, когда переподключение нужнее всего.
+  StreamConfig? _cfg;
+
+  /// Текст на красной карточке экрана настройки — чтобы устаз, вернувшись
+  /// к телефону, увидел, что эфир прервался, а не гадал.
+  String? _dropNotice;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// Возвращение приложения из фона. Пока телефон в фоне таймеры Flutter
+  /// не тикают, поэтому отложенная попытка переподключения могла проспать
+  /// весь этот срок. Как только устаз вернулся к экрану — пробуем сразу.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState st) {
+    if (st == AppLifecycleState.resumed &&
+        _state == _LiveState.reconnecting &&
+        !_userStopped) {
+      _retryTimer?.cancel();
+      _attemptReconnect();
+    }
+  }
 
   Future<void> _initCamera() async {
     if (_cameraOn) return;
@@ -47,20 +125,9 @@ class _LiveTabState extends State<LiveTab> {
           resolution: Resolution.RESOLUTION_480,
           fps: 30),
       initialCameraPosition: CameraPosition.front,
-      onConnectionSuccess: () {
-        if (mounted) setState(() {});
-      },
-      onConnectionFailed: (e) {
-        if (!mounted) return;
-        setState(() => _streaming = false);
-        _stopTimer();
-        _snack('Не удалось подключиться к серверу эфира: $e');
-      },
-      onDisconnection: () {
-        if (!mounted) return;
-        setState(() => _streaming = false);
-        _stopTimer();
-      },
+      onConnectionSuccess: _onConnected,
+      onConnectionFailed: _onConnectionFailed,
+      onDisconnection: _onDisconnected,
     );
     try {
       await c.initialize();
@@ -73,11 +140,110 @@ class _LiveTabState extends State<LiveTab> {
     }
   }
 
+  // ── Обработчики соединения ─────────────────────────────────────────────
+
+  /// Связь установлена — и при первом старте, и после переподключения.
+  void _onConnected() {
+    if (!mounted) return;
+    final wasReconnecting = _state == _LiveState.reconnecting;
+    _retryTimer?.cancel();
+    setState(() {
+      _state = _LiveState.live;
+      _retry = 0;
+      _dropNotice = null;
+    });
+    if (wasReconnecting) _snack('Связь восстановлена, эфир продолжается');
+  }
+
+  /// Не удалось подключиться. Отличается от [_onDisconnected] тем, что
+  /// соединения не было вовсе, — но лечится тем же повтором: в дороге
+  /// «не подключилось» и «отвалилось» одинаково означают плохую сеть.
+  void _onConnectionFailed(String e) {
+    if (!mounted || _userStopped) return;
+    _scheduleReconnect('Не удалось подключиться к серверу эфира');
+  }
+
+  /// Соединение разорвано. Штатное завершение приходит сюда же, поэтому
+  /// первым делом смотрим на [_userStopped].
+  void _onDisconnected() {
+    if (!mounted) return;
+    if (_userStopped) {
+      setState(() => _state = _LiveState.idle);
+      return;
+    }
+    _scheduleReconnect('Связь с сервером эфира потеряна');
+  }
+
+  // ── Переподключение ────────────────────────────────────────────────────
+
+  /// Ставит следующую попытку в очередь либо сдаётся, если их больше нет.
+  void _scheduleReconnect(String reason) {
+    if (_retry >= _retryDelays.length) {
+      _giveUp(reason);
+      return;
+    }
+    final delay = _retryDelays[_retry];
+    _retry++;
+    setState(() => _state = _LiveState.reconnecting);
+    // Вибрация на каждой попытке: телефон обычно на подставке, и это
+    // единственный сигнал, который устаз заметит, не глядя на экран.
+    HapticFeedback.heavyImpact();
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, _attemptReconnect);
+  }
+
+  Future<void> _attemptReconnect() async {
+    if (!mounted || _userStopped || _state != _LiveState.reconnecting) return;
+    final c = _controller;
+    final cfg = _cfg;
+    if (c == null || cfg == null) {
+      _giveUp('Эфир прерван');
+      return;
+    }
+    try {
+      // Обрываем возможный подвисший сеанс: без этого плагин на некоторых
+      // устройствах отказывается стартовать поверх незакрытого соединения.
+      await c.stopStreaming();
+      await c.startStreaming(streamKey: cfg.streamKey, url: cfg.rtmpUrl);
+      // Успех подтвердит onConnectionSuccess. Если он не придёт, сервер
+      // разорвёт соединение сам и мы вернёмся сюда следующей попыткой.
+    } catch (e) {
+      if (!mounted) return;
+      _scheduleReconnect('Не удалось переподключиться');
+    }
+  }
+
+  /// Попытки исчерпаны. Эфир закончен — говорим об этом громко.
+  void _giveUp(String reason) {
+    _retryTimer?.cancel();
+    _stopTimer();
+    _stopComments();
+    WakelockPlus.disable();
+    if (!mounted) return;
+    setState(() {
+      _state = _LiveState.idle;
+      _retry = 0;
+      _dropNotice = '$reason. Эфир остановлен — нажмите «Начать эфир», '
+          'чтобы возобновить.';
+    });
+    // Звук и серия вибраций: устаз ведёт урок и на экран не смотрит.
+    SystemSound.play(SystemSoundType.alert);
+    HapticFeedback.heavyImpact();
+    Future.delayed(const Duration(milliseconds: 400),
+        () => HapticFeedback.heavyImpact());
+    Future.delayed(const Duration(milliseconds: 800),
+        () => HapticFeedback.heavyImpact());
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(msg)));
   }
+
+  /// «Эфир идёт» с точки зрения интерфейса: во время переподключения
+  /// трансляция для устаза не закончилась, экран должен остаться прежним.
+  bool get _streaming => _state != _LiveState.idle;
 
   void _startTimer() {
     _elapsed = Duration.zero;
@@ -96,11 +262,26 @@ class _LiveTabState extends State<LiveTab> {
     _commentPoll?.cancel();
     _commentPoll =
         Timer.periodic(const Duration(seconds: 4), (_) => _loadComments());
+    // Зрителей опрашиваем реже комментариев: число меняется медленно,
+    // а на сервере оно считается по живым сердцебиениям с окном в 45 секунд.
+    _loadViewers();
+    _viewersPoll?.cancel();
+    _viewersPoll =
+        Timer.periodic(const Duration(seconds: 8), (_) => _loadViewers());
   }
 
   void _stopComments() {
     _commentPoll?.cancel();
     _commentPoll = null;
+    _viewersPoll?.cancel();
+    _viewersPoll = null;
+    _viewers = 0;
+  }
+
+  Future<void> _loadViewers() async {
+    final n = await LiveService.viewers();
+    if (!mounted || n == null || n == _viewers) return;
+    setState(() => _viewers = n);
   }
 
   Future<void> _loadComments() async {
@@ -123,10 +304,17 @@ class _LiveTabState extends State<LiveTab> {
     setState(() => _busy = true);
     try {
       if (_streaming) {
+        // Флаг ставим ДО остановки: onDisconnection прилетит немедленно,
+        // и без него переподключение приняло бы штатный конец за обрыв
+        // и подняло бы эфир заново.
+        _userStopped = true;
+        _retryTimer?.cancel();
+        _retry = 0;
         await c.stopStreaming();
-        setState(() => _streaming = false);
+        setState(() => _state = _LiveState.idle);
         _stopTimer();
         _stopComments();
+        await WakelockPlus.disable();
       } else {
         // Адрес и ключ публикации выдаёт сервер по токену: держать ключ в
         // сборке нельзя — приложение публичное, строку вытащат из бинарника
@@ -137,18 +325,29 @@ class _LiveTabState extends State<LiveTab> {
           if (mounted) setState(() => _busy = false);
           return;
         }
+        _cfg = cfg;
+        _userStopped = false;
+        _retry = 0;
         // Заголовок эфира — на сервер (не критично, если не дойдёт).
         await const StaffApi().setLiveTitle(_titleCtrl.text.trim());
         await c.startStreaming(
             streamKey: cfg.streamKey, url: cfg.rtmpUrl);
-        setState(() => _streaming = true);
+        setState(() {
+          _state = _LiveState.connecting;
+          _dropNotice = null;
+        });
         _startTimer();
         _startComments();
+        // Не даём экрану гаснуть. Без этого телефон на подставке блокируется
+        // через минуту-другую, съёмка останавливается, и сервер сворачивает
+        // эфир — самая частая причина обрыва, ничего общего с сетью.
+        await WakelockPlus.enable();
       }
     } catch (e) {
       _snack('Ошибка эфира: $e');
-      setState(() => _streaming = false);
+      setState(() => _state = _LiveState.idle);
       _stopTimer();
+      await WakelockPlus.disable();
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -163,8 +362,14 @@ class _LiveTabState extends State<LiveTab> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _retryTimer?.cancel();
+    _viewersPoll?.cancel();
     _stopTimer();
     _stopComments();
+    // Уходя с вкладки, обязательно снимаем удержание экрана: иначе телефон
+    // не гаснет и после эфира, и батарея садится незаметно для устаза.
+    WakelockPlus.disable();
     _scrollCtrl.dispose();
     _controller?.dispose();
     _titleCtrl.dispose();
@@ -186,6 +391,7 @@ class _LiveTabState extends State<LiveTab> {
         const SizedBox(height: 14),
         Padding(padding: _hpad, child: _header()),
         const SizedBox(height: 14),
+        Padding(padding: _hpad, child: _dropNoticeCard()),
         _cameraPreview(),
         const SizedBox(height: 16),
         Padding(padding: _hpad, child: _titleField()),
@@ -231,11 +437,15 @@ class _LiveTabState extends State<LiveTab> {
                         fontWeight: FontWeight.w700,
                         color: Colors.white)),
                 const Spacer(),
+                _viewersBadge(),
+                const SizedBox(width: 8),
                 _liveBadge(),
               ],
             ),
           ),
         ),
+        if (_state == _LiveState.reconnecting)
+          Positioned(top: 72, left: 16, right: 16, child: _reconnectBanner()),
         // Нижний скрим + комментарии + кнопка «Завершить эфир».
         Positioned(
           left: 0,
@@ -272,10 +482,13 @@ class _LiveTabState extends State<LiveTab> {
   }
 
   Widget _liveBadge() {
+    // Пока связи нет, значок серый и без слова LIVE: показывать красный
+    // «в эфире» в момент, когда на сервер ничего не уходит, — обман.
+    final connected = _state == _LiveState.live;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: Colors.red.shade700,
+        color: connected ? Colors.red.shade700 : Colors.grey.shade700,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
@@ -283,12 +496,115 @@ class _LiveTabState extends State<LiveTab> {
         children: [
           const PulsingDot(color: Colors.white, size: 7),
           const SizedBox(width: 6),
-          Text('LIVE $_clock',
+          Text(connected ? 'LIVE $_clock' : 'НЕТ СВЯЗИ',
               style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w800,
                   color: Colors.white)),
         ],
+      ),
+    );
+  }
+
+  /// Число смотрящих. Показываем и ноль: устазу важно знать, что его пока
+  /// никто не смотрит, — это повод подождать или позвать учеников.
+  Widget _viewersBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.visibility_outlined,
+              size: 14, color: Colors.white),
+          const SizedBox(width: 5),
+          Text('$_viewers',
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  /// Баннер поверх картинки на время попыток вернуть связь.
+  Widget _reconnectBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade900,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 12, offset: Offset(0, 4))
+        ],
+      ),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+                strokeWidth: 2.5, color: Colors.white),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Связь потеряна — восстанавливаю',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)),
+                const SizedBox(height: 2),
+                Text(
+                  'Попытка $_retry из ${_retryDelays.length}. '
+                  'Ученики видят паузу.',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.white.withValues(alpha: 0.9)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Красная карточка на экране настройки: эфир оборвался, пока устаз
+  /// не смотрел. Держится до следующего старта, снэкбар для этого не годится —
+  /// он исчезает через несколько секунд.
+  Widget _dropNoticeCard() {
+    final text = _dropNotice;
+    if (text == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.red.shade900,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.white, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(text,
+                  style: const TextStyle(
+                      fontSize: 14, height: 1.35, color: Colors.white)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+              onPressed: () => setState(() => _dropNotice = null),
+            ),
+          ],
+        ),
       ),
     );
   }

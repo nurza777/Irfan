@@ -10,12 +10,15 @@ import '../services/account_backup.dart';
 import '../services/api_config.dart';
 import '../services/asmaul_husna.dart';
 import '../services/certificate_service.dart';
+import '../services/lang.dart';
+import '../services/notification_service.dart';
+import '../services/prayer_service.dart';
 import '../services/quran_audio_cache.dart';
 import '../services/quran_service.dart';
 import '../services/quran_translations.dart';
 import '../services/reciters.dart';
 import '../services/settings_service.dart';
-import '../services/verify_service.dart';
+import '../services/auth_service.dart' show AuthService;
 import '../services/visual_effects.dart';
 import '../services/voice_service.dart';
 import '../widgets/account_gate.dart';
@@ -26,15 +29,20 @@ import 'names_screen.dart';
 import 'news_screen.dart';
 import 'account_screen.dart';
 import 'azkar_screen.dart';
+import 'book_reader_screen.dart';
+import 'books_screen.dart';
+import '../services/books_service.dart';
 import 'certificates_screen.dart';
 import 'courses_page.dart';
 import '../services/staff_auth.dart';
 import 'staff/staff_home.dart';
 import 'qibla_page.dart';
 import 'quran_page.dart';
+import 'rating_screen.dart';
 import 'ramadan_screen.dart';
 import 'restore_account_screen.dart';
 import 'settings_screen.dart';
+import 'support_chat_screen.dart';
 import 'tafsir_sheet.dart';
 import 'surah_screen.dart';
 import 'tracker_page.dart';
@@ -57,13 +65,55 @@ class _RootScreenState extends State<RootScreen> {
   void initState() {
     super.initState();
     if (kDebugMode) _applyDebugScreen();
+    // Человек нажал по уведомлению «прочитали ли вы намаз», а не по кнопке
+    // в нём: спросим то же самое окном. Подписка и разбор повода запуска —
+    // два разных случая (приложение работало / было выгружено), нужны оба.
+    NotificationService.pendingAsk.addListener(_onPendingAsk);
+    NotificationService.consumeLaunchPayload();
+    _onPendingAsk();
+  }
+
+  /// Показывает вопрос окном. Значение забираем сразу, чтобы повторный показ
+  /// не случился ни при пересборке, ни при возврате из фона.
+  void _onPendingAsk() {
+    final payload = NotificationService.pendingAsk.value;
+    if (payload == null) return;
+    NotificationService.pendingAsk.value = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _askDialog(payload);
+    });
+  }
+
+  Future<void> _askDialog(String payload) async {
+    final parts = payload.split('|');
+    if (parts.length != 3) return;
+    final key = PrayerKey.values.where((k) => k.name == parts[2]).firstOrNull;
+    if (key == null) return;
+    final name = t(key.titleRu);
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(appLang == Lang.ky
+            ? '$name намазын окудуңузбу?'
+            : 'Прочитали ли вы намаз $name?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: Text(t('Нет'))),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true), child: Text(t('Да'))),
+        ],
+      ),
+    );
+    if (yes == null) return;   // окно закрыли, не ответив
+    await NotificationService.answerAsk(payload, yes);
+    if (mounted) _goTo(1);     // показываем трекер с новой отметкой
   }
 
   /// Тестовый хук (только debug-сборка): открывает экран сразу при запуске,
   /// `_speak`-варианты дополнительно включают озвучку — для headless-проверок
   /// на симуляторе без кликов по UI. Флаг — одноразовый файл в Documents
   /// контейнера (значения: names | names_speak | zikr | zikr_speak |
-  /// restore:<номер> | restore:<номер>:<код>):
+  /// restore:<номер> | restore:<номер>:<пароль>):
   /// `echo names_speak > "$(xcrun simctl get_app_container booted \
   ///  kg.irfan.irfan data)/Documents/irfan_screen.txt"` перед запуском.
   Future<void> _applyDebugScreen() async {
@@ -95,6 +145,36 @@ class _RootScreenState extends State<RootScreen> {
         } else if (screen == 'ramadan') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const RamadanScreen()));
+        } else if (screen == 'rating') {
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const RatingScreen()));
+        } else if (screen == 'support_chat') {
+          // Экран переписки с поддержкой: до него иначе три нажатия вглубь
+          // настроек, а проверять его надо в состоянии «аккаунта нет» —
+          // то есть на чистой установке, где нажимать нечем.
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const SupportChatScreen()));
+        } else if (screen == 'books') {
+          // `books` — список, `books:<номер по порядку>` — скачать книгу и
+          // сразу открыть её: в симуляторе без нажатий иначе не проверить
+          // ни загрузку, ни сам просмотрщик PDF.
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const BooksScreen()));
+          final i = int.tryParse(reciterArg ?? '');
+          if (i != null) {
+            final svc = BooksService.instance;
+            svc.fetch().then((list) async {
+              if (list == null || i < 0 || i >= list.length) return;
+              final ok = await svc.download(list[i]);
+              debugPrint('BOOK_HOOK download=$ok id=${list[i].id}');
+              if (ok && mounted) {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => BookReaderScreen(book: list[i])));
+              }
+            });
+          }
         } else if (screen == 'azkar') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const AzkarScreen()));
@@ -126,7 +206,7 @@ class _RootScreenState extends State<RootScreen> {
           final list = CertificateService.instance.items;
           if (i != null && i >= 0 && i < list.length) {
             final female =
-                AppScope.of(context).auth?.current?.gender.name == 'female';
+                AppScope.of(context).auth?.current?.gender?.name == 'female';
             Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -141,6 +221,12 @@ class _RootScreenState extends State<RootScreen> {
           VisualEffects.instance.setLevel(reciterArg == 'light'
               ? EffectsLevel.light
               : EffectsLevel.full);
+        } else if (screen == 'ask_demo') {
+          // `ask_demo` — показать вопрос «прочитали ли вы намаз» через 5 с.
+          // Ждать настоящего времени намаза для проверки кнопок нельзя,
+          // а сами кнопки живут в системном слое и тестами не покрываются.
+          NotificationService.showAskDemo(
+              AppScope.of(context).settings!, PrayerKey.fajr);
         } else if (screen == 'account') {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const AccountScreen()));
@@ -164,10 +250,10 @@ class _RootScreenState extends State<RootScreen> {
           });
         } else if (screen == 'restore') {
           // `restore:<номер>` — открыть перенос аккаунта с подставленным
-          // номером; `restore:<номер>:<код>` — пройти весь путь целиком.
+          // номером; `restore:<номер>:<пароль>` — пройти весь путь целиком.
           // Причина та же, что у staff_login: в симуляторе печатать нечем, а
-          // проверять надо не картинку, а цепочку код → разрешение → слепок →
-          // пересчёт серии и коинов.
+          // проверять надо не картинку, а цепочку пароль → слепок → пересчёт
+          // серии и коинов.
           final phone = reciterArg ?? '';
           if (parts.length > 2) {
             _debugRestore(phone, parts[2]);
@@ -259,6 +345,7 @@ class _RootScreenState extends State<RootScreen> {
 
   @override
   void dispose() {
+    NotificationService.pendingAsk.removeListener(_onPendingAsk);
     _controller.dispose();
     super.dispose();
   }
@@ -269,17 +356,27 @@ class _RootScreenState extends State<RootScreen> {
         curve: Curves.easeInOutCubic,
       );
 
-  Widget _flipPage(int index, Widget child) {
+  Widget _flipPage(int index, Widget page) {
     return AnimatedBuilder(
       animation: _controller,
-      builder: (context, _) {
-        double page = 2;
+      // Страницу передаём отдельным доводом, а не замыканием: так она
+      // строится один раз, а на каждый пиксель прокрутки пересобирается
+      // только обёртка с поворотом.
+      child: page,
+      builder: (context, child) {
+        double pos = 2;
         if (_controller.hasClients && _controller.position.haveDimensions) {
-          page = _controller.page ?? 2;
+          pos = _controller.page ?? 2;
         }
-        final delta = (index - page).clamp(-1.0, 1.0);
-        if (delta == 0) return child;
-        // Поворот вокруг ближнего к центру края — как страница книги.
+        final delta = (index - pos).clamp(-1.0, 1.0);
+        // Обёртка ставится ВСЕГДА, даже когда поворачивать нечего.
+        //
+        // Раньше у страницы по центру возвращался голый child, а у соседних —
+        // Transform поверх него. Дерево виджетов от этого меняло форму на
+        // каждом заезде страницы в центр, Flutter считал это другим виджетом
+        // и пересоздавал всё поддерево вместе с его состоянием: каскад
+        // появления блоков проигрывался заново при каждом переходе, а экран
+        // «обновлялся дважды». Постоянная форма дерева это убирает.
         final angle = delta * -math.pi / 2.5;
         return Transform(
           alignment:
@@ -296,20 +393,18 @@ class _RootScreenState extends State<RootScreen> {
     );
   }
 
-  /// Отладочный путь переноса аккаунта целиком: подтвердить код, забрать
+  /// Отладочный путь переноса аккаунта целиком: сверить пароль, забрать
   /// слепок, применить его и напечатать, что получилось. Только debug.
-  Future<void> _debugRestore(String phone, String code) async {
+  Future<void> _debugRestore(String phone, String password) async {
     final state = AppScope.of(context);   // до первого await
     debugPrint('RESTORE base=${await ApiConfig.base()}');
-    final v = await VerifyService.confirm(phone, code);
-    debugPrint('RESTORE verify=${v.status.name} ticket=${v.ticket.length}');
-    if (!v.isOk) return;
-    final r = await AccountRestore.fetch(phone, ticket: v.ticket);
+    final proof = await AuthService.makeProof(phone, password);
+    final r = await AccountRestore.fetch(phone, pass: proof);
     debugPrint('RESTORE fetch=${r.status.name} name=${r.name} '
         'spent=${r.spent} hasData=${r.hasData}');
     if (!r.isOk) return;
     final err = await state.restoreAccount(r,
-        phone: phone, password: 'restore123');
+        phone: phone, password: password);
     debugPrint('RESTORE apply=${err ?? 'ok'} '
         'streak=${state.tracker?.currentStreak()} '
         'prayers=${state.tracker?.totalReadCount()} coins=${state.coins}');

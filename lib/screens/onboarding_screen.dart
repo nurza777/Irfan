@@ -39,18 +39,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 40),
-                FadeSlideIn(
-                  offset: const Offset(0, -20),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset('assets/images/logo.png',
-                        height: 110,
-                        errorBuilder: (_, __, ___) =>
-                            const SizedBox.shrink()),
-                  ),
-                ),
-                const SizedBox(height: 40),
+                // Логотипа здесь нет намеренно: он уже стоит на иконке
+                // приложения, с которой человек сюда и пришёл. Вместо него
+                // распорка — карточка встаёт по центру, между верхом и кнопкой.
+                const Spacer(),
                 FadeSlideIn(
                   delay: const Duration(milliseconds: 180),
                   child: GlassCard(

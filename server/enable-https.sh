@@ -4,11 +4,17 @@
 # куплен и его A-запись уже указывает на этот сервер:
 #
 #   ssh root@178.104.206.100
-#   bash /opt/irfan-server/enable-https.sh api.example.kg admin@example.kg
+#   bash /opt/irfan-server/enable-https.sh api.irfan.kg admin@example.kg irfan.kg
+#
+# Первый домен — основной: именно он попадает в ссылки, которые сервер раздаёт
+# приложению (уроки, эфир). Остальные просто добавляются в тот же сертификат и
+# ведут на тот же сервер — так корень домена может отдавать privacy.html, не
+# требуя второго сертификата.
 #
 # Что делает:
 #   1. ставит nginx и certbot, поднимает reverse-proxy :443 → apiserver (:8090);
-#   2. выпускает сертификат Let's Encrypt с автопродлением;
+#   2. выпускает сертификат Let's Encrypt на все перечисленные домены
+#      с автопродлением;
 #   3. переводит НА HTTPS всё, что раздаёт адреса клиентам:
 #        - MEDIA_BASE (ссылки на новые загруженные уроки),
 #        - live-on.sh (адрес HLS-потока эфира в status.json),
@@ -25,28 +31,34 @@ set -euo pipefail
 DOMAIN="${1:-}"
 EMAIL="${2:-}"
 if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
-  echo "Использование: bash enable-https.sh <домен> <email-для-Let's-Encrypt>" >&2
+  echo "Использование: bash enable-https.sh <домен> <email> [ещё домены...]" >&2
   exit 1
 fi
+shift 2
+ALL_DOMAINS=("$DOMAIN" ${@+"$@"})
 
 ROOT=/opt/irfan-server
 API="$ROOT/api"
 
-echo "==> Домен: $DOMAIN"
+echo "==> Основной домен: $DOMAIN"
+[[ $# -gt 0 ]] && echo "==> Дополнительно в сертификат: $*"
 
-# Проверяем, что домен уже смотрит на этот сервер: иначе certbot провалится
+# Проверяем, что домены уже смотрят на этот сервер: иначе certbot провалится
 # на HTTP-01, и разбираться будет дольше.
 SERVER_IP="$(curl -fsS https://api.ipify.org || true)"
-DOMAIN_IP="$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1 || true)"
-if [[ -z "$DOMAIN_IP" ]]; then
-  echo "!! $DOMAIN пока никуда не указывает — A-запись не создана или не разошлась." >&2
-  exit 1
-fi
-if [[ -n "$SERVER_IP" && "$SERVER_IP" != "$DOMAIN_IP" ]]; then
-  echo "!! $DOMAIN указывает на $DOMAIN_IP, а сервер — $SERVER_IP." >&2
-  echo "   Поправьте A-запись и подождите обновления DNS." >&2
-  exit 1
-fi
+for d in "${ALL_DOMAINS[@]}"; do
+  d_ip="$(getent hosts "$d" | awk '{print $1}' | head -1 || true)"
+  if [[ -z "$d_ip" ]]; then
+    echo "!! $d пока никуда не указывает — A-запись не создана или не разошлась." >&2
+    exit 1
+  fi
+  if [[ -n "$SERVER_IP" && "$SERVER_IP" != "$d_ip" ]]; then
+    echo "!! $d указывает на $d_ip, а сервер — $SERVER_IP." >&2
+    echo "   Поправьте A-запись и подождите обновления DNS." >&2
+    exit 1
+  fi
+  echo "    $d → $d_ip"
+done
 
 apt-get update -qq
 apt-get install -y -qq nginx certbot python3-certbot-nginx
@@ -59,7 +71,7 @@ apt-get install -y -qq nginx certbot python3-certbot-nginx
 cat > /etc/nginx/sites-available/irfan <<NGINX
 server {
     listen $SERVER_IP:80;
-    server_name $DOMAIN;
+    server_name ${ALL_DOMAINS[*]};
 
     # API, статика и HLS эфира — всё отдаёт apiserver.py.
     location / {
@@ -82,11 +94,45 @@ NGINX
 ln -sf /etc/nginx/sites-available/irfan /etc/nginx/sites-enabled/irfan
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
+# Именно restart, а не reload. Свежепоставленный nginx уже слушает 0.0.0.0:80
+# со своим дефолтным конфигом, а reload не умеет переехать с wildcard-порта
+# на конкретный IP: мастер-процесс продолжает держать 0.0.0.0:80, bind()
+# на $SERVER_IP:80 падает с EADDRINUSE, и nginx тихо остаётся на старом
+# конфиге — systemctl reload при этом рапортует об успехе.
+systemctl enable nginx
+systemctl restart nginx
 
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+# Убеждаемся, что конфиг реально применился: иначе certbot получит 404
+# на ACME-проверку и придётся разбираться заново.
+sleep 1
+if ! ss -tln | grep -q "$SERVER_IP:80"; then
+  echo "!! nginx не слушает $SERVER_IP:80 — конфиг не применился." >&2
+  tail -5 /var/log/nginx/error.log >&2
+  exit 1
+fi
+echo "==> nginx слушает $SERVER_IP:80"
+
+CERTBOT_ARGS=()
+for d in "${ALL_DOMAINS[@]}"; do CERTBOT_ARGS+=(-d "$d"); done
+certbot --nginx "${CERTBOT_ARGS[@]}" --non-interactive --agree-tos -m "$EMAIL" --redirect
 systemctl enable --now certbot.timer   # автопродление
+
+# Certbot дописывает `listen 443 ssl` на ВСЕ адреса и про tailscaled не знает,
+# а тот уже держит :443 на своём адресе — bind падает с EADDRINUSE, и nginx
+# остаётся работать со старым конфигом, без HTTPS. Привязываем :443 к тому же
+# публичному IP, что и :80.
+sed -i "s|^\(\s*\)listen 443 ssl;|\1listen $SERVER_IP:443 ssl;|" \
+    /etc/nginx/sites-available/irfan
+nginx -t
+systemctl restart nginx
+
+sleep 1
+if ! ss -tln | grep -q "$SERVER_IP:443"; then
+  echo "!! nginx не слушает $SERVER_IP:443 — HTTPS не поднялся." >&2
+  tail -5 /var/log/nginx/error.log >&2
+  exit 1
+fi
+echo "==> nginx слушает $SERVER_IP:443"
 
 BASE="https://$DOMAIN"
 

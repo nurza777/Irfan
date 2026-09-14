@@ -3,29 +3,35 @@ import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../services/account_backup.dart';
-import '../services/auth_service.dart' show normalizePhone;
+import '../services/auth_service.dart'
+    show AuthService, normalizePhone;
 import '../services/date_fmt.dart';
 import '../services/lang.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
 import '../widgets/support_card.dart';
-import 'verify_phone_screen.dart';
 
 /// Перенос аккаунта на этот телефон.
 ///
 /// Аккаунт живёт на устройстве, и до этого экрана смена телефона означала
 /// потерю серии, коинов и всей истории намазов — вернуть их было нечем.
 ///
-/// Два пути внутрь, и первый пробуется молча:
-///   * телефон уже закреплён за записью (приложение переустановили: Keychain
-///     переустановку переживает, а хранилище нет) — код не нужен;
-///   * иначе номер подтверждается кодом, и запись переезжает сюда.
+/// Внутрь пускает номер и пароль — те же, с которыми человек заходил на
+/// прежнем телефоне. Сервер сверяет пароль с записанным и отдаёт аккаунт.
+///
+/// Кода подтверждения здесь БОЛЬШЕ НЕТ. Автоотправка не подключена, код
+/// диктовал устаз вручную, и человек упирался в ожидание на ровном месте.
+/// По решению владельца вход идёт сразу.
 class RestoreAccountScreen extends StatefulWidget {
   /// Подставленный номер. Нужен только отладочному хуку: в симуляторе печатать
   /// нечем, а проверять экран надо (см. root_screen, значение `restore`).
   final String phone;
-  const RestoreAccountScreen({super.key, this.phone = ''});
+
+  /// Подставленный пароль — тем же хуком и по той же причине.
+  final String password;
+  const RestoreAccountScreen(
+      {super.key, this.phone = '', this.password = ''});
 
   @override
   State<RestoreAccountScreen> createState() => _RestoreAccountScreenState();
@@ -46,9 +52,10 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
   void initState() {
     super.initState();
     _phone.text = widget.phone;
-    // Номер подставлен — значит, экран открыт отладочным хуком, и нажимать
+    _password.text = widget.password;
+    // Поля подставлены — значит, экран открыт отладочным хуком, и нажимать
     // «Продолжить» в симуляторе некому.
-    if (widget.phone.isNotEmpty) {
+    if (widget.phone.isNotEmpty && widget.password.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _lookup());
     }
   }
@@ -60,7 +67,7 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
     super.dispose();
   }
 
-  // ── Шаг 1: номер ───────────────────────────────────────────────────────
+  // ── Шаг 1: номер и пароль ──────────────────────────────────────────────
 
   Future<void> _lookup() async {
     final phone = normalizePhone(_phone.text);
@@ -68,26 +75,19 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
       setState(() => _error = t('Некорректный номер телефона'));
       return;
     }
+    if (_password.text.length < 6) {
+      setState(() => _error = t('Пароль — минимум 6 символов'));
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
-    var r = await AccountRestore.fetch(phone);
-    // Кода просит только сервер и только когда этот телефон записи не
-    // принадлежит. Экран подтверждения открываем сами и берём у него
-    // одноразовое разрешение.
-    if (r.status == RestoreStatus.needsCode && mounted) {
-      final ticket = await Navigator.push<String>(
-        context,
-        MaterialPageRoute(builder: (_) => VerifyPhoneScreen(phone: phone)),
-      );
-      if (!mounted) return;
-      if (ticket == null || ticket.isEmpty) {
-        setState(() => _busy = false);
-        return;
-      }
-      r = await AccountRestore.fetch(phone, ticket: ticket);
-    }
+    // Серверу уходит не пароль, а доказательство: PBKDF2 от пароля с солью
+    // из номера. На любом телефоне значение одно и то же — потому вход и
+    // работает с нового устройства.
+    final proof = await AuthService.makeProof(phone, _password.text);
+    final r = await AccountRestore.fetch(phone, pass: proof);
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -100,7 +100,9 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
           RestoreStatus.notFound => t('На этом номере аккаунта нет'),
           RestoreStatus.blocked =>
             t('Аккаунт заблокирован администратором'),
-          RestoreStatus.needsCode => t('Номер не подтверждён'),
+          RestoreStatus.badPassword => t('Неверный пароль'),
+          RestoreStatus.needsCode =>
+            t('Не удалось войти — обратитесь в поддержку'),
           RestoreStatus.offline => t('Нет связи с сервером — попробуйте позже'),
           _ => t('Не удалось восстановить аккаунт'),
         };
@@ -108,7 +110,7 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
     });
   }
 
-  // ── Шаг 2: новый пароль и перенос ──────────────────────────────────────
+  // ── Шаг 2: подтверждение переноса ──────────────────────────────────────
 
   Future<void> _restore() async {
     final r = _found;
@@ -153,7 +155,7 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
               const SizedBox(height: 14),
               const Icon(Icons.restore, size: 52, color: AppColors.goldLight),
               const SizedBox(height: 16),
-              if (_found == null) ..._askPhone() else ..._askPassword(_found!),
+              if (_found == null) ..._askPhone() else ..._confirm(_found!),
               if (_error != null) ...[
                 const SizedBox(height: 12),
                 Text(_error!,
@@ -170,8 +172,8 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
 
   List<Widget> _askPhone() => [
         Text(
-          t('Введите номер, на который был заведён аккаунт. Серия, коины и '
-              'история намазов вернутся на этот телефон.'),
+          t('Введите номер и пароль, с которыми вы заходили на прежнем '
+              'телефоне. Серия, коины и история намазов вернутся сюда.'),
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 15, height: 1.45),
         ),
@@ -189,6 +191,24 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
                   labelText: t('Телефон'),
                   hintText: '+996 555 12 34 56',
                   prefixIcon: const Icon(Icons.phone_outlined),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                onSubmitted: (_) => _busy ? null : _lookup(),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _password,
+                obscureText: _obscure,
+                decoration: InputDecoration(
+                  labelText: t('Пароль'),
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                    icon: Icon(_obscure
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined),
+                  ),
                   border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14)),
                 ),
@@ -222,12 +242,11 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
         ),
         const SizedBox(height: 14),
         SupportCard(
-          text: t('Если это новый телефон, понадобится код подтверждения — '
-              'его называет устаз.'),
+          text: t('Забыли пароль? Позвоните нам — восстановим доступ.'),
         ),
       ];
 
-  List<Widget> _askPassword(RestoreResult r) => [
+  List<Widget> _confirm(RestoreResult r) => [
         Text(
           r.name.isEmpty ? _foundPhone : r.name,
           textAlign: TextAlign.center,
@@ -249,31 +268,14 @@ class _RestoreAccountScreenState extends State<RestoreAccountScreen> {
           child: Column(
             children: [
               Text(
-                t('Придумайте пароль для входа на этом телефоне. Прежний не '
-                    'подойдёт: пароль хранится только на устройстве и на '
-                    'сервер не уходит.'),
+                t('Аккаунт переедет на этот телефон вместе с историей. '
+                    'Пароль останется прежним, а на старом устройстве '
+                    'аккаунт больше отмечать намазы не будет — иначе две '
+                    'истории разошлись бы.'),
                 style: TextStyle(
                     fontSize: 12,
                     height: 1.35,
                     color: Colors.white.withValues(alpha: 0.7)),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _password,
-                obscureText: _obscure,
-                decoration: InputDecoration(
-                  labelText: t('Пароль'),
-                  prefixIcon: const Icon(Icons.lock_outline),
-                  suffixIcon: IconButton(
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                    icon: Icon(_obscure
-                        ? Icons.visibility_outlined
-                        : Icons.visibility_off_outlined),
-                  ),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14)),
-                ),
-                onSubmitted: (_) => _busy ? null : _restore(),
               ),
               const SizedBox(height: 16),
               SizedBox(

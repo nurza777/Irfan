@@ -40,29 +40,81 @@ class UserAccount {
   final String phone;
   final String passHash;
   final DateTime createdAt;
-  final int age;
-  final Gender gender;
+
+  /// Дата рождения. Возраст из неё считается сам — см. [age].
+  ///
+  /// Раньше человек вводил возраст числом, и оно застывало навсегда: анкета
+  /// говорила «25» и через три года. Дата не устаревает.
+  ///
+  /// null — у записей, заведённых прежними сборками: там сохранено только
+  /// число. Их не трогаем, возраст берём как есть.
+  final DateTime? birthDate;
+
+  /// Возраст, введённый числом в старых сборках. Читать надо [age].
+  final int storedAge;
+
+  /// Пол — НЕОБЯЗАТЕЛЕН, поэтому допускает null.
+  ///
+  /// Раньше без него нельзя было зарегистрироваться, и App Store вернул
+  /// приложение по правилу 5.1.1(v): требовать личные данные можно только
+  /// те, без которых приложение не работает. Пол здесь нужен ровно для
+  /// одного — согласования окончаний в поздравлениях и на бланке диплома
+  /// («прошёл» / «прошла»). Не указан — пишем в мужском роде, как принято
+  /// в русском языке при неизвестном адресате.
+  final Gender? gender;
   final String city;
+
+  /// Доказательство пароля для сервера — см. [AuthService.makeProof].
+  ///
+  /// [passHash] для этого не годится: у него своя случайная соль на каждом
+  /// телефоне, и с другого устройства такое же значение не получить. А вход
+  /// по номеру и паролю нужен именно с ДРУГОГО телефона.
+  ///
+  /// Пустая строка — у записей, заведённых прежними сборками: там пароль
+  /// только местный. Значение появится при первом же входе.
+  final String serverProof;
   const UserAccount({
     required this.name,
     required this.phone,
     required this.passHash,
     required this.createdAt,
-    required this.age,
+    required this.storedAge,
+    this.birthDate,
     required this.gender,
     this.city = '',
+    this.serverProof = '',
   });
 
+  /// Полных лет. Считается от даты рождения, если она есть.
+  int get age {
+    final b = birthDate;
+    if (b == null) return storedAge;
+    final now = DateTime.now();
+    var years = now.year - b.year;
+    // День рождения в этом году ещё не наступил — год не засчитан.
+    if (now.month < b.month || (now.month == b.month && now.day < b.day)) {
+      years--;
+    }
+    return years < 0 ? 0 : years;
+  }
+
   UserAccount copyWith(
-          {int? age, Gender? gender, String? passHash, String? city}) =>
+          {int? storedAge,
+          DateTime? birthDate,
+          Gender? gender,
+          String? passHash,
+          String? city,
+          String? serverProof}) =>
       UserAccount(
         name: name,
         phone: phone,
         passHash: passHash ?? this.passHash,
         createdAt: createdAt,
-        age: age ?? this.age,
+        storedAge: storedAge ?? this.storedAge,
+        birthDate: birthDate ?? this.birthDate,
         gender: gender ?? this.gender,
         city: city ?? this.city,
+        serverProof: serverProof ?? this.serverProof,
       );
 
   Map<String, dynamic> toJson() => {
@@ -70,9 +122,15 @@ class UserAccount {
         'phone': phone,
         'passHash': passHash,
         'createdAt': createdAt.toIso8601String(),
+        // Пишем ВЫЧИСЛЕННЫЙ возраст, а не хранимый: он уходит на сервер и
+        // в панель, где должен быть сегодняшним. А рядом — саму дату, из
+        // которой он и берётся при следующем чтении.
         'age': age,
-        'gender': gender.name,
+        if (birthDate != null)
+          'birthDate': birthDate!.toIso8601String().substring(0, 10),
+        'gender': gender?.name ?? '',
         'city': city,
+        if (serverProof.isNotEmpty) 'serverProof': serverProof,
       };
 
   factory UserAccount.fromJson(Map<String, dynamic> j) => UserAccount(
@@ -84,11 +142,14 @@ class UserAccount {
         createdAt:
             DateTime.tryParse(j['createdAt'] as String? ?? '') ??
                 DateTime.now(),
-        age: (j['age'] as num?)?.toInt() ?? 0,
-        gender: Gender.values.firstWhere(
-            (g) => g.name == j['gender'],
-            orElse: () => Gender.male),
+        storedAge: (j['age'] as num?)?.toInt() ?? 0,
+        birthDate: DateTime.tryParse((j['birthDate'] as String?) ?? ''),
+        gender: Gender.values
+            .where((g) => g.name == j['gender'])
+            .cast<Gender?>()
+            .firstOrNull,
         city: j['city'] as String? ?? '',
+        serverProof: j['serverProof'] as String? ?? '',
       );
 }
 
@@ -185,6 +246,30 @@ class AuthService {
     return 'pbkdf2\$$_iterations\$${_hex(salt)}\$${_hex(dk)}';
   }
 
+  /// Доказательство пароля для сервера: одно и то же значение на любом
+  /// телефоне, потому что соль берётся из номера, а не случайная.
+  ///
+  /// Нужно, чтобы человек входил в свой аккаунт с НОВОГО телефона просто по
+  /// номеру и паролю. Сервер сравнивает это значение с тем, что у него
+  /// записано, — и пускает. Раньше вместо этого спрашивали код, который
+  /// называл устаз вручную.
+  ///
+  /// Сам пароль серверу не уходит: там оседает только PBKDF2 поверх этого
+  /// значения (см. `_upsert_user` в apiserver.py). То есть пароль в открытом
+  /// виде не знает ни сеть, ни файл реестра.
+  static Future<String> makeProof(String phone, String password) async {
+    final key = normalizePhone(phone);
+    if (key.isEmpty || password.isEmpty) return '';
+    // Соль выводим из номера: она обязана совпадать на всех устройствах, но
+    // не должна быть общей для всех аккаунтов — иначе одна радужная таблица
+    // вскрыла бы весь реестр разом.
+    final salt = sha256.convert(utf8.encode('irfan-acc:$key')).bytes
+        .sublist(0, 16);
+    final dk =
+        await compute(_pbkdf2Sync, _Pbkdf2Req(password, salt, _iterations));
+    return _hex(dk);
+  }
+
   /// Проверка пароля против сохранённого хеша.
   /// `ok` — совпал; `needsUpgrade` — старый формат, надо пересохранить.
   Future<({bool ok, bool needsUpgrade})> _verify(
@@ -209,7 +294,7 @@ class AuthService {
     required String name,
     required String phone,
     required String password,
-    required int age,
+    required DateTime? birthDate,
     required Gender? gender,
     String city = '',
   }) async {
@@ -217,8 +302,15 @@ class AuthService {
     final ph = normalizePhone(phone);
     if (ph.isEmpty) return t('Некорректный номер телефона');
     if (password.length < 6) return t('Пароль — минимум 6 символов');
-    if (age < 5 || age > 120) return t('Укажите корректный возраст (5–120)');
-    if (gender == null) return t('Выберите пол');
+    if (birthDate == null) return t('Укажите дату рождения');
+    // Возраст считаем из даты и проверяем его же — потолок нужен не ради
+    // придирки: дата из будущего или 1900 года означает промах в выборе,
+    // а не столетнего ученика.
+    final years = _yearsSince(birthDate);
+    if (years < 5 || years > 120) {
+      return t('Проверьте дату рождения');
+    }
+    // Пол не проверяем: он необязателен (см. UserAccount.gender).
     final users = _users();
     if (users.any((u) => u.phone == ph)) {
       return t('Аккаунт с таким номером уже есть');
@@ -228,9 +320,11 @@ class AuthService {
       phone: ph,
       passHash: await _newHash(password),
       createdAt: DateTime.now(),
-      age: age,
+      storedAge: years,
+      birthDate: birthDate,
       gender: gender,
       city: city.trim(),
+      serverProof: await makeProof(ph, password),
     ));
     await _saveUsers(users);
     await _prefs.setString(_currentKey, ph);
@@ -252,7 +346,8 @@ class AuthService {
     required String password,
     required DateTime createdAt,
     int age = 0,
-    Gender gender = Gender.male,
+    DateTime? birthDate,
+    Gender? gender,
     String city = '',
   }) async {
     final ph = normalizePhone(phone);
@@ -264,24 +359,52 @@ class AuthService {
       phone: ph,
       passHash: await _newHash(password),
       createdAt: createdAt,
-      age: age,
+      storedAge: age,
+      birthDate: birthDate,
       gender: gender,
       city: city.trim(),
+      serverProof: await makeProof(ph, password),
     ));
     await _saveUsers(users);
     await _prefs.setString(_currentKey, ph);
     return null;
   }
 
-  /// Обновляет возраст/пол текущего пользователя.
-  Future<void> updateCurrentProfile({int? age, Gender? gender}) async {
+  /// Полных лет от даты рождения до сегодня.
+  static int _yearsSince(DateTime b) {
+    final now = DateTime.now();
+    var years = now.year - b.year;
+    if (now.month < b.month || (now.month == b.month && now.day < b.day)) {
+      years--;
+    }
+    return years;
+  }
+
+  /// Обновляет дату рождения и пол текущего пользователя.
+  Future<void> updateCurrentProfile(
+      {DateTime? birthDate, Gender? gender}) async {
     final phone = _prefs.getString(_currentKey);
     if (phone == null) return;
     final users = _users();
     final i = users.indexWhere((u) => u.phone == phone);
     if (i < 0) return;
-    users[i] = users[i].copyWith(age: age, gender: gender);
+    users[i] = users[i].copyWith(
+        birthDate: birthDate,
+        storedAge: birthDate == null ? null : _yearsSince(birthDate),
+        gender: gender);
     await _saveUsers(users);
+  }
+
+  /// Заведён ли аккаунт с этим номером НА ЭТОМ телефоне.
+  ///
+  /// По этому признаку вход решает, проверять ли пароль у себя или идти за
+  /// аккаунтом на сервер: человек мог сменить телефон.
+  bool hasLocal(String phone) {
+    final raw = phone.trim().toLowerCase();
+    final ph = normalizePhone(phone);
+    final key = ph.isEmpty ? raw : ph;
+    if (key.isEmpty) return false;
+    return _users().any((u) => u.phone == key);
   }
 
   /// null — успех, иначе текст ошибки.
@@ -298,12 +421,19 @@ class AuthService {
     if (user == null) return t('Аккаунт не найден');
     final res = await _verify(key, password, user.passHash);
     if (!res.ok) return t('Неверный пароль');
-    // Прозрачно переводим старый несолёный SHA-256 на PBKDF2.
-    if (res.needsUpgrade) {
+    // Прозрачно переводим старый несолёный SHA-256 на PBKDF2 и заодно
+    // дозаписываем доказательство для сервера: у записей прежних сборок его
+    // нет, а без него человек не войдёт с другого телефона.
+    if (res.needsUpgrade || user.serverProof.isEmpty) {
       final users = _users();
       final i = users.indexWhere((u) => u.phone == key);
       if (i >= 0) {
-        users[i] = users[i].copyWith(passHash: await _newHash(password));
+        users[i] = users[i].copyWith(
+            passHash:
+                res.needsUpgrade ? await _newHash(password) : null,
+            serverProof: user.serverProof.isEmpty
+                ? await makeProof(key, password)
+                : null);
         await _saveUsers(users);
       }
     }

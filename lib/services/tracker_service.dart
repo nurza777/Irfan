@@ -5,7 +5,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'prayer_service.dart';
 
 /// Статус намаза в трекере.
-enum PrayerStatus { pending, read, missed }
+///
+/// [restored] — «каза», намаз, прочитанный позже пропущенного времени.
+/// Держим отдельным значением, а не приравниваем к [read]: восстановленный
+/// намаз — не то же самое, что прочитанный вовремя, и в статистике человек
+/// должен видеть разницу. Старые записи значения не знают и читаются как
+/// прежде: неизвестный статус превращается в [pending].
+enum PrayerStatus { pending, read, missed, restored }
+
+/// Пропущенный намаз, который можно восстановить.
+class MissedPrayer {
+  final DateTime day;
+  final PrayerKey prayer;
+  const MissedPrayer(this.day, this.prayer);
+}
 
 /// Трекер намазов: хранит отметки по дням в SharedPreferences.
 /// Через 10 минут после наступления времени намаза приложение спрашивает,
@@ -20,8 +33,7 @@ class TrackerService {
   static Future<TrackerService> create() async =>
       TrackerService(await SharedPreferences.getInstance());
 
-  String _dayKey(DateTime day) =>
-      '$_keyPrefix${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+  String _dayKey(DateTime day) => '$_keyPrefix${dayKeyOf(day)}';
 
   Map<String, String> _readDay(DateTime day) {
     final raw = _prefs.getString(_dayKey(day));
@@ -43,6 +55,42 @@ class TrackerService {
     if (key != _dayKey(DateTime.now())) _pastReadFor = null;
   }
 
+  /// Записывает ответ на вопрос «прочитали ли вы намаз», не требуя живого
+  /// [TrackerService].
+  ///
+  /// Нужно потому, что кнопки «Да»/«Нет» человек нажимает в уведомлении при
+  /// закрытом приложении: обработчик выполняется в ОТДЕЛЬНОМ изоляте, где
+  /// нет ни состояния приложения, ни его сервисов. Формат ключа и значения
+  /// здесь ровно тот же, что и у [setStatus] — потому и вынесено в общее
+  /// место, а не переписано во второй раз.
+  static Future<void> applyAnswer(String dayKey, String prayerName,
+      PrayerStatus status) async {
+    final prefs = await SharedPreferences.getInstance();
+    // Значение могли изменить в другом изоляте, пока этот жил в памяти.
+    await prefs.reload();
+    final key = '$_keyPrefix$dayKey';
+    Map<String, String> map = {};
+    final raw = prefs.getString(key);
+    if (raw != null) {
+      try {
+        map = Map<String, String>.from(jsonDecode(raw) as Map);
+      } catch (_) {
+        map = {};
+      }
+    }
+    map[prayerName] = status.name;
+    await prefs.setString(key, jsonEncode(map));
+  }
+
+  /// Ключ дня в том виде, в каком он уходит в уведомление и возвращается
+  /// из него. Отдельный метод, чтобы формат не разъехался.
+  static String dayKeyOf(DateTime day) =>
+      '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+
+  /// Перечитывает хранилище: ответы могли прийти из уведомления, пока
+  /// приложение было в фоне, и в памяти лежат устаревшие значения.
+  Future<void> reload() => _prefs.reload();
+
   PrayerStatus statusOf(DateTime day, PrayerKey prayer) {
     final v = _readDay(day)[prayer.name];
     return PrayerStatus.values
@@ -52,11 +100,16 @@ class TrackerService {
         PrayerStatus.pending;
   }
 
-  /// Первый намаз, по которому пора спросить: время + 10 мин прошло,
+  /// Первый намаз, по которому пора спросить: время + задержка прошло,
   /// а отметки ещё нет.
-  PrayerKey? dueQuestion(DayPrayerTimes times, DateTime now) {
+  ///
+  /// [delay] приходит из настроек — та же величина, по которой ставится
+  /// уведомление с кнопками. Иначе карточка на главной и уведомление
+  /// спрашивали бы в разное время.
+  PrayerKey? dueQuestion(DayPrayerTimes times, DateTime now,
+      {Duration? delay}) {
     for (final k in PrayerKey.values.where((k) => k.isPrayer)) {
-      final askAt = times[k].add(askDelay);
+      final askAt = times[k].add(delay ?? askDelay);
       if (now.isAfter(askAt) &&
           statusOf(times.date, k) == PrayerStatus.pending) {
         return k;
@@ -72,9 +125,42 @@ class TrackerService {
   }
 
   /// Сколько намазов отмечено пропущенными за день.
+  /// Восстановленные сюда НЕ попадают: человек их прочитал, пусть и позже.
   int missedCount(DateTime day) {
     final map = _readDay(day);
     return map.values.where((v) => v == PrayerStatus.missed.name).length;
+  }
+
+  /// Сколько намазов восстановлено за день.
+  int restoredCount(DateTime day) {
+    final map = _readDay(day);
+    return map.values.where((v) => v == PrayerStatus.restored.name).length;
+  }
+
+  /// Пропущенные намазы за всю историю — свежие сверху.
+  ///
+  /// Список для экрана восстановления. Потолок нужен: у человека, который
+  /// год отмечал пропуски, накопятся тысячи записей, и построить их все
+  /// разом — заметная пауза на ровном месте.
+  List<MissedPrayer> missedPrayers({int limit = 300}) {
+    final days = _prefs
+        .getKeys()
+        .where((k) => k.startsWith(_keyPrefix))
+        .map(_dateFromKey)
+        .whereType<DateTime>()
+        .toList()
+      ..sort((a, b) => b.compareTo(a));   // свежие первыми
+    final out = <MissedPrayer>[];
+    for (final d in days) {
+      final map = _readDay(d);
+      for (final k in PrayerKey.values.where((k) => k.isPrayer)) {
+        if (map[k.name] == PrayerStatus.missed.name) {
+          out.add(MissedPrayer(d, k));
+          if (out.length >= limit) return out;
+        }
+      }
+    }
+    return out;
   }
 
   /// Сколько всего намазов отмечено прочитанными за всю историю
@@ -174,7 +260,7 @@ class TrackerService {
     if (end.isBefore(start)) start = end;
     final totalDays = end.difference(start).inDays + 1;
 
-    var read = 0, missed = 0, fullDays = 0;
+    var read = 0, missed = 0, restored = 0, fullDays = 0;
     final byPrayer = <PrayerKey, int>{
       for (final k in PrayerKey.values.where((k) => k.isPrayer)) k: 0
     };
@@ -191,6 +277,8 @@ class TrackerService {
           byPrayer[k] = byPrayer[k]! + 1;
         } else if (v == PrayerStatus.missed.name) {
           missed++;
+        } else if (v == PrayerStatus.restored.name) {
+          restored++;
         }
       }
       if (dayRead == 5) fullDays++;
@@ -202,6 +290,7 @@ class TrackerService {
       days: totalDays,
       read: read,
       missed: missed,
+      restored: restored,
       fullDays: fullDays,
       readByPrayer: byPrayer,
     );
@@ -215,6 +304,10 @@ class PeriodStats {
   final int days;
   final int read;
   final int missed;
+
+  /// Прочитанные позже срока. Считаются отдельно от [read] — см. описание
+  /// [PrayerStatus.restored].
+  final int restored;
   final int fullDays;
   final Map<PrayerKey, int> readByPrayer;
   const PeriodStats({
@@ -223,6 +316,7 @@ class PeriodStats {
     required this.days,
     required this.read,
     required this.missed,
+    required this.restored,
     required this.fullDays,
     required this.readByPrayer,
   });

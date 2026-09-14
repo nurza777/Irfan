@@ -295,7 +295,10 @@ enum RestoreStatus {
   /// Такого номера в реестре нет.
   notFound,
 
-  /// Ни ключа устройства, ни действующего разрешения — нужен код.
+  /// Пароль не подошёл.
+  badPassword,
+
+  /// Ни ключа устройства, ни пароля, ни разрешения. Остаётся код у устаза.
   needsCode,
 
   /// Аккаунт заблокирован администратором.
@@ -310,6 +313,7 @@ class RestoreResult {
   final String name;
   final String gender;
   final int age;
+  final DateTime? birthDate;
   final String city;
 
   /// Когда аккаунт был создан в приложении. Сохраняем как есть: от этой даты
@@ -329,6 +333,7 @@ class RestoreResult {
     this.name = '',
     this.gender = '',
     this.age = 0,
+    this.birthDate,
     this.city = '',
     this.createdAt,
     this.spent = 0,
@@ -346,10 +351,17 @@ class RestoreResult {
 class AccountRestore {
   const AccountRestore._();
 
-  /// [ticket] — разрешение, выданное сервером после верного кода. Без него
-  /// сервер пустит, только если этот телефон уже закреплён за записью
-  /// (переустановка приложения: Keychain её переживает, а хранилище — нет).
-  static Future<RestoreResult> fetch(String phone, {String? ticket}) async {
+  /// [pass] — доказательство пароля (AuthService.makeProof). Это обычный
+  /// путь: человек вводит номер и пароль на новом телефоне и входит.
+  ///
+  /// [ticket] — разрешение, выданное сервером после кода от устаза. Запасной
+  /// путь для тех, кто пароль забыл.
+  ///
+  /// Без обоих сервер пустит, только если этот телефон уже закреплён за
+  /// записью (переустановка приложения: Keychain её переживает, а
+  /// хранилище — нет).
+  static Future<RestoreResult> fetch(String phone,
+      {String? ticket, String? pass}) async {
     final int status;
     final Map<String, dynamic> j;
     try {
@@ -362,6 +374,7 @@ class AccountRestore {
             body: utf8.encode(jsonEncode({
               'phone': phone,
               if (secret.isNotEmpty) 'secret': secret,
+              if (pass != null && pass.isNotEmpty) 'pass': pass,
               if (ticket != null && ticket.isNotEmpty) 'ticket': ticket,
             })),
           )
@@ -375,9 +388,11 @@ class AccountRestore {
     }
     if (status == 404) return const RestoreResult(RestoreStatus.notFound);
     if (status == 403) {
-      return RestoreResult(j['error'] == 'blocked'
-          ? RestoreStatus.blocked
-          : RestoreStatus.needsCode);
+      return RestoreResult(switch (j['error']) {
+        'blocked' => RestoreStatus.blocked,
+        'bad password' => RestoreStatus.badPassword,
+        _ => RestoreStatus.needsCode,
+      });
     }
     if (status != 200) return const RestoreResult(RestoreStatus.error);
 
@@ -391,6 +406,7 @@ class AccountRestore {
       name: (profile['name'] as String?) ?? '',
       gender: (profile['gender'] as String?) ?? '',
       age: (profile['age'] as num?)?.toInt() ?? 0,
+      birthDate: DateTime.tryParse((profile['birthDate'] as String?) ?? ''),
       city: (profile['city'] as String?) ?? '',
       createdAt: created == null || created <= 0
           ? null

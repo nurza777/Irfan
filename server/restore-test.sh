@@ -8,8 +8,12 @@
 # временном каталоге — боевой не трогается. Без такой проверки резервная
 # копия остаётся просто файлом, про который неизвестно, рабочий ли он.
 #
-# Пароль учётки ревьюера ниже — им проверяется, что секреты пережили копию
-# (после смены пароля подставьте новый или уберите эту проверку).
+# Вход по учётке ревьюера проверяет, что секреты пережили копию. Пароль в
+# скрипт не пишем — репозиторий публичный; передайте его при запуске:
+#
+#   REVIEW_PASS='…' bash /opt/irfan-server/restore-test.sh
+#
+# Без REVIEW_PASS эта проверка пропускается, остальные идут как обычно.
 set -uo pipefail
 
 ARCHIVE="$(ls -1t /opt/irfan-server/backups/irfan-*.tar.gz | head -1)"
@@ -65,11 +69,19 @@ curl -s -u "$ADMIN" "http://127.0.0.1:$PORT/staff.json" | \
 
 # Самое главное: работает ли ВХОД по восстановленным учёткам.
 printf "    вход устаза из копии:  "
-curl -s -X POST "http://127.0.0.1:$PORT/auth/token" -H 'Content-Type: application/json' \
-  -d '{"login":"review","password":"⟨ПАРОЛЬ_РЕВЬЮ⟩"}' | python3 -c "
+if [ -z "${REVIEW_PASS:-}" ]; then
+  echo "пропущено — не задан REVIEW_PASS"
+else
+  # JSON собираем питоном, а не склейкой строк: кавычка или обратная косая
+  # в пароле сломали бы тело запроса.
+  BODY=$(REVIEW_PASS="$REVIEW_PASS" python3 -c \
+    'import json,os;print(json.dumps({"login":"review","password":os.environ["REVIEW_PASS"]}))')
+  curl -s -X POST "http://127.0.0.1:$PORT/auth/token" -H 'Content-Type: application/json' \
+    -d "$BODY" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 print('РАБОТАЕТ, роль', d.get('role')) if d.get('token') else print('НЕ РАБОТАЕТ:', d)"
+fi
 # История учеников: по ней аккаунт переезжает на новый телефон. Считаем
 # файлы, а не спрашиваем сервер: слепок отдаётся только владельцу номера.
 printf "    слепки прогресса:      "
