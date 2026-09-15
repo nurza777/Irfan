@@ -277,6 +277,8 @@ bash tools/shoot-screenshots.sh
 Заполнено по факту: проверено, что именно приложение отправляет на сервер.
 Совпадает с `ios/Runner/PrivacyInfo.xcprivacy` — Apple сверяет одно с другим.
 
+**Опубликовано в App Store Connect 15.09.2026** — до этого там по ошибке стояло «данные не собираются», а сборка 1.0.1 уже заявляла сбор.
+
 **Tracking: No.** Рекламных SDK и сторонней аналитики в сборке нет,
 `NSPrivacyTracking` = false, `NSPrivacyTrackingDomains` пуст.
 
@@ -286,10 +288,11 @@ bash tools/shoot-screenshots.sh
 | Contact Info → Phone Number | да | App Functionality | опознаватель аккаунта, по нему устаз выдаёт доступ к курсам |
 | Location → Coarse Location | да | App Functionality | **только название города** в профиле; координаты на сервер не уходят — расчёт времени намаза целиком на телефоне |
 | User Content → Other User Content | да | App Functionality | сообщения в чате эфира, заметки и закладки в резервной копии, личные обеты |
+| User Content → Customer Support | да | App Functionality | переписка с поддержкой в приложении (с 1.0.1) |
 | Identifiers → Device ID | да | App Functionality | ключ устройства из Keychain: им сервер отличает владельца записи от постороннего, знающего номер |
 | Usage Data → Product Interaction | да | App Functionality | счётчики прочитанных намазов, серия дней, коины |
 | Diagnostics → Crash Data | **нет** | App Functionality | `POST /crash`: текст ошибки, стек, версия, версия ОС. Номера телефона в теле нет — поэтому «не связано с личностью» |
-| Other Data | да | App Functionality | пол и возраст из анкеты регистрации |
+| Other Data | да | App Functionality | пол, возраст и дата рождения из анкеты регистрации |
 
 Чего в приложении **нет** и что отмечать не надо: почта, платёжные данные,
 адрес, контакты, фотографии (выбранные обои остаются на телефоне и никуда
