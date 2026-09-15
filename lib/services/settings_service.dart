@@ -219,6 +219,30 @@ class SettingsService {
   bool get liveNotificationsEnabled =>
       _prefs.getBool(_liveNotifyKey) ?? false;
 
+  /// Выбирал ли человек сам, уведомлять ли об эфире. Нужно, чтобы включение
+  /// по умолчанию (см. [adoptLiveDefault]) не перебило его собственное «нет».
+  bool get liveNotificationsChosen => _prefs.containsKey(_liveNotifyKey);
+
+  /// Включает уведомления об эфире по умолчанию — как только человек
+  /// разрешил уведомления, если сам этот переключатель ещё не трогал.
+  ///
+  /// Раньше они были выключены, пока человек не найдёт переключатель в
+  /// настройках, — и о первых эфирах почти никто не узнавал: разрешение на
+  /// азан дали, а про эфир не догадались. Выключить можно там же, и это
+  /// решение запоминается: второй раз включать не станем.
+  ///
+  /// [supported] — умеет ли платформа получать пуши об эфире (сейчас только
+  /// iOS). Включать переключатель там, где уведомление всё равно не придёт,
+  /// значило бы обещать то, чего не будет.
+  ///
+  /// Возвращает true, если включил сейчас: значит, пора подписаться на пуши.
+  Future<bool> adoptLiveDefault(
+      {required bool granted, required bool supported}) async {
+    if (!granted || !supported || liveNotificationsChosen) return false;
+    await setLiveNotificationsEnabled(true);
+    return true;
+  }
+
   /// Спрашивать ли после намаза «прочитали?» — уведомлением с кнопками
   /// «Да» и «Нет», чтобы отметить, не открывая приложение.
   bool get askEnabled => _prefs.getBool(_askKey) ?? true;

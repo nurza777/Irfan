@@ -37,31 +37,19 @@ class RatingRow {
       );
 }
 
-/// Приглашения: свой код и что он уже принёс.
+/// Приглашения: свой код и сколько человек пришло по нему.
+///
+/// Очков за приглашения сейчас не дают (см. сервер, раздел соревнования):
+/// код только складывает круг друзей.
 class ReferralInfo {
   final String code;
   final int invited;   // сколько всего пришло по коду
-  final int counted;   // из них прижившихся (за них и начислено)
-  final int bonus;     // очков начислено
-  final int perFriend;
-  final int minPrayers;
 
-  const ReferralInfo({
-    this.code = '',
-    this.invited = 0,
-    this.counted = 0,
-    this.bonus = 0,
-    this.perFriend = 0,
-    this.minPrayers = 0,
-  });
+  const ReferralInfo({this.code = '', this.invited = 0});
 
   factory ReferralInfo.fromJson(Map<String, dynamic> j) => ReferralInfo(
         code: (j['code'] ?? '').toString(),
         invited: (j['invited'] as num?)?.toInt() ?? 0,
-        counted: (j['counted'] as num?)?.toInt() ?? 0,
-        bonus: (j['bonus'] as num?)?.toInt() ?? 0,
-        perFriend: (j['perFriend'] as num?)?.toInt() ?? 0,
-        minPrayers: (j['minPrayers'] as num?)?.toInt() ?? 0,
       );
 }
 

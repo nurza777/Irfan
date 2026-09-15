@@ -82,6 +82,26 @@ class BooksService extends ChangeNotifier {
   /// Скачанные книги — по [Book.id].
   final Set<String> downloaded = {};
 
+  /// Есть ли в каталоге хоть одна книга. Пока нет — пункта «Книги» в меню
+  /// не показываем: раздел-заглушка «скоро появятся» хуже его отсутствия,
+  /// а на проверке App Store за такие разделы отказывают (Guideline 2.1).
+  /// Админ добавит первую книгу — пункт появится сам.
+  bool hasBooks = false;
+
+  void _setHasBooks(bool v) {
+    if (v == hasBooks) return;
+    hasBooks = v;
+    notifyListeners();
+  }
+
+  /// Узнаёт, есть ли книги: сначала по сохранённому каталогу (мгновенно и
+  /// без сети), потом по свежему. Зовётся при запуске приложения.
+  Future<void> refreshAvailability() async {
+    final saved = await cached();
+    if (saved != null) _setHasBooks(saved.isNotEmpty);
+    await fetch();   // сам обновит флаг, если сервер ответил
+  }
+
   /// Каталог с прошлого захода — показывается сразу, пока идёт запрос.
   Future<List<Book>?> cached() async {
     final body = await ResponseCache.read(cacheKey);
@@ -97,11 +117,15 @@ class BooksService extends ChangeNotifier {
           .get(Uri.parse('$base/books.json'))
           .timeout(const Duration(seconds: 8));
       // Каталог ещё ни разу не публиковали — это «книг нет», а не сбой.
-      if (r.statusCode == 404) return const [];
+      if (r.statusCode == 404) {
+        _setHasBooks(false);
+        return const [];
+      }
       if (r.statusCode != 200) return null;
       final body = utf8.decode(r.bodyBytes);
       final items = parse(body);
       if (items == null) return null;
+      _setHasBooks(items.isNotEmpty);
       await ResponseCache.write(cacheKey, body);
       await refreshDownloaded(items);
       unawaited(_dropStale(items));

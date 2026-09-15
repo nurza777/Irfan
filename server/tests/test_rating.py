@@ -110,6 +110,7 @@ print('== приглашения ==')
 c, b4 = call('POST', '/rating', {'phone': p1, 'secret': secret(1)})
 code = ((b4 or {}).get('referral') or {}).get('code') or ''
 check('код приглашения выдан', len(code) == 6, code)
+points_before = ((b4 or {}).get('me') or {}).get('points')
 
 c, b5 = call('POST', '/referral/apply', {'phone': p3, 'secret': secret(3),
                                          'code': code})
@@ -124,20 +125,24 @@ c, _ = call('POST', '/referral/apply', {'phone': p2, 'secret': secret(2),
                                         'code': 'ZZZZZZ'})
 check('неизвестный код отбит', c == 404, c)
 
-print('== бонус даётся за прижившегося, а не за пустой аккаунт ==')
+print('== очков за приглашения нет ==')
+# Бонусы убраны: код давал +100 за каждого активного, и давние ученики могли
+# разом «пригласиться» к одному человеку. Код теперь только про круг друзей.
 c, b6 = call('POST', '/rating', {'phone': p1, 'secret': secret(1)})
 ref = (b6 or {}).get('referral') or {}
 check('приглашённый посчитан', ref.get('invited') == 1, ref)
-check('и зачтён — у него 50 намазов', ref.get('counted') == 1, ref)
-check('бонус начислен', ref.get('bonus') == ref.get('perFriend'), ref)
+check('очки пригласившего не выросли',
+      ((b6 or {}).get('me') or {}).get('points') == points_before,
+      (points_before, (b6 or {}).get('me')))
+check('полей бонуса в ответе нет',
+      not any(k in ref for k in ('bonus', 'counted', 'perFriend')), ref)
 
 empty = student(8, 'Пустой', 0, 0, phone='0555118888')
 call('POST', '/referral/apply', {'phone': empty, 'secret': secret(8),
                                  'code': code})
 c, b7 = call('POST', '/rating', {'phone': p1, 'secret': secret(1)})
 ref2 = (b7 or {}).get('referral') or {}
-check('пустой аккаунт бонуса не даёт',
-      ref2.get('invited') == 2 and ref2.get('counted') == 1, ref2)
+check('второй приглашённый тоже посчитан', ref2.get('invited') == 2, ref2)
 
 print('== круг друзей ==')
 c, b8 = call('POST', '/rating', {'phone': p3, 'secret': secret(3)})

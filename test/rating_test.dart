@@ -36,20 +36,18 @@ void main() {
   });
 
   test('сведения о приглашениях читаются', () {
-    final ref = ReferralInfo.fromJson(const {
-      'code': 'AB3K9P',
-      'invited': 5,
-      'counted': 2,
-      'bonus': 200,
-      'perFriend': 100,
-      'minPrayers': 25,
-    });
+    final ref = ReferralInfo.fromJson(const {'code': 'AB3K9P', 'invited': 5});
     expect(ref.code, 'AB3K9P');
     expect(ref.invited, 5);
-    expect(ref.counted, 2);
-    expect(ref.bonus, 200);
-    expect(ref.perFriend, 100);
-    expect(ref.minPrayers, 25);
+  });
+
+  test('ответ прежнего сервера с бонусами разбирается без ошибок', () {
+    // Сервер, ещё не обновлённый, пришлёт поля бонуса. Они просто лишние.
+    final ref = ReferralInfo.fromJson(const {
+      'code': 'AB3K9P', 'invited': 2, 'counted': 1, 'bonus': 100,
+    });
+    expect(ref.code, 'AB3K9P');
+    expect(ref.invited, 2);
   });
 
   test('у каждого отказа своё объяснение, а не «ошибка»', () {

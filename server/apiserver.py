@@ -111,11 +111,18 @@ _MAX_SNAPSHOT_BYTES = 192 * 1024
 
 # Корни грубой брани. Первая группа ловится с приставками («нахуй»,
 # «заебал»), вторая — только с начала слова: иначе «барсука» и «сукно»
-# попадали бы под «сука». Список заведомо неполный, см. _mask_profanity.
+# попадали бы под «сука». Третья — кыргызская брань, и только целым словом
+# с коротким окончанием: с любым хвостом под неё попали бы фамилии, которые
+# с этих букв начинаются. «Бляха» в списке нарочно нет — это обычное слово.
+# Список заведомо неполный, см. _mask_profanity.
 _PROFANITY_RE = re.compile(
-    r'\w*(?:хуй|хуё|хуе|пизд|ебат|ебал|ебан|еблан|бляд|блять|мудак|мудил'
-    r'|гандон|долбоёб|долбоеб|пидор|пидар|ублюд|шлюх|fuck|cunt)\w*'
-    r'|\b(?:сука|сучка|говно|shit|bitch)\w*', re.IGNORECASE)
+    # «стра» перед «ху…» — это «страхуем», «застрахуй», а не брань.
+    r'\w*(?:(?<!стра)(?:хуй|хуё|хуе|хуя)|пизд|пизж|ебат|ебал|ебан|еблан|ебаш'
+    r'|ебну|ебуч|заеб|выеб|уеб|бляд|блять|мудак|мудил|залуп|шалав|дроч'
+    r'|гандон|долбоёб|долбоеб|пидор|пидар|ублюд|шлюх|fuck)\w*'
+    # cunt — только с начала слова: внутри он в Scunthorpe и подобных.
+    r'|\b(?:сука|сучка|говно|мразь|мразот|shit|bitch|cunt)\w*'
+    r'|\b(?:котак|котаг|жалап)\w{0,4}\b', re.IGNORECASE)
 _MAX_USERS = 10000
 _MAX_REDEMPTIONS = 20000
 _MAX_TEACHERS = 500
@@ -578,18 +585,48 @@ def _read_json(path, default):
         return default
 
 
+# Латинские буквы и цифры, похожие на кириллицу. Ими обходят фильтр:
+# «xуй» с латинской x для глаза то же слово, а для шаблона — нет. Замена
+# строго символ на символ, поэтому позиции в нормализованной строке
+# совпадают с исходной и закрывается ровно то, что человек написал.
+_LOOKALIKE = str.maketrans({
+    'a': 'а', 'e': 'е', 'o': 'о', 'p': 'р', 'c': 'с', 'x': 'х', 'y': 'у',
+    'k': 'к', 'm': 'м', 't': 'т', 'z': 'з', 'ё': 'е',
+    'A': 'А', 'E': 'Е', 'O': 'О', 'P': 'Р', 'C': 'С', 'X': 'Х', 'Y': 'У',
+    'K': 'К', 'M': 'М', 'T': 'Т', 'B': 'В', 'H': 'Н', 'Z': 'З', 'Ё': 'Е',
+    '0': 'о', '3': 'з', '6': 'б', '@': 'а',
+})
+
+
 def _mask_profanity(text):
-    """Закрывает звёздочками грубую брань в чате эфира.
+    """Закрывает звёздочками грубую брань — в чате эфира и в именах.
+
+    Имена в таблице соревнования и в чате видят все, поэтому фильтр тот же,
+    что у сообщений. Для имён он даже нужнее: сообщение пишут сгоряча, а имя
+    выбирают нарочно.
 
     Список заведомо неполный — обойти его несложно. Он и не задуман как
     защита: это обязательный для App Store фильтр очевидного (Guideline 1.2),
     работающий вместе с жалобой на сообщение и блокировкой автора. Убирает
     самое грубое до того, как его увидят дети на уроке.
+
+    Проверяем дважды: как написано и после замены латинских двойников на
+    кириллицу. Только второй проход сломал бы английские слова из списка
+    (в «fuck» латинская c стала бы кириллической), только первый — пропустил
+    бы «xуй».
     """
-    def cover(m):
-        w = m.group(0)
-        return w[0] + '*' * (len(w) - 1)
-    return _PROFANITY_RE.sub(cover, text)
+    text = text or ''
+    spans = [m.span() for m in _PROFANITY_RE.finditer(text)]
+    norm = text.translate(_LOOKALIKE)
+    if norm != text:
+        spans += [m.span() for m in _PROFANITY_RE.finditer(norm)]
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start + 1, end):   # первую букву оставляем
+            chars[i] = '*'
+    return ''.join(chars)
 
 
 def _is_teacher_name(name):
@@ -603,7 +640,8 @@ def _is_teacher_name(name):
 
 def _add_comment(name, text):
     """Добавляет комментарий зрителя в comments.json, возвращает его или None."""
-    name = (name or '').strip()[:40] or 'Гость'
+    # Имя видят все зрители — фильтруем его так же, как текст.
+    name = _mask_profanity((name or '').strip()[:40]) or 'Гость'
     text = _mask_profanity((text or '').strip()[:300])
     if not text:
         return None
@@ -857,15 +895,19 @@ def _book_files():
 # Поэтому очки — это заработанное за всю историю, без потолка кошелька и без
 # вычета трат. Защита от накрутки та же, что у коинов: больше, чем физически
 # возможно за время жизни аккаунта, не засчитываем.
-_REF_BONUS = 100          # очков пригласившему за одного прижившегося друга
-_REF_MIN_PRAYERS = 25     # с какого порога друг считается прижившимся
-_REF_MAX_REWARDED = 20    # за скольких друзей максимум начисляем
+#
+# Бонусов за приглашения сейчас НЕТ — по решению владельца (15.09.2026).
+# Прежний бонус давался за друга, прочитавшего 25 намазов, но код можно было
+# ввести когда угодно: двадцать давних активных учеников вводили код одного
+# человека, и он получал +2000 очков, никого не приведя. Код приглашения
+# остался — теперь он только складывает круг друзей. Прежний расчёт лежит
+# в истории git, если бонусы решат вернуть.
 _REF_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'   # без 0/O и 1/I/L
 _TOP_LIMIT = 100
 
 
 def _rating_points(rec, now=None):
-    """Очки ученика для рейтинга (без бонуса за приглашения).
+    """Очки ученика для рейтинга.
 
     Считаем НЕ по присланному числу, а от намазов: они хранятся на сервере
     и уже зажаты потолком «пять в сутки за время жизни аккаунта». Зикры
@@ -907,25 +949,6 @@ def _ref_code_for(rec, taken):
     return ''
 
 
-def _ref_bonus(ident, users, now):
-    """Бонус пригласившему: по очкам за каждого друга, который прижился.
-
-    Порог обязателен. Без него достаточно завести двадцать пустых аккаунтов
-    по своим же кодам и подняться в таблице, ничего не прочитав.
-
-    Бонус идёт ТОЛЬКО в очки рейтинга и не попадает в кошелёк: иначе
-    приглашения превратились бы в способ печатать коины, а вся защита
-    от накрутки считает именно кошелёк.
-    """
-    good = 0
-    for u in users:
-        if u.get('invitedBy') != ident:
-            continue
-        if int(u.get('prayersRead') or 0) >= _REF_MIN_PRAYERS:
-            good += 1
-    return min(good, _REF_MAX_REWARDED) * _REF_BONUS, good
-
-
 def _circle_of(ident, users):
     """«Друзья» — те, с кем человек связан приглашением.
 
@@ -951,13 +974,15 @@ def _circle_of(ident, users):
     return circle
 
 
-def _rating_row(u, ident, now, users):
-    bonus, _ = _ref_bonus(u.get('phone'), users, now)
+def _rating_row(u, ident, now):
     return {
         # Номер телефона НЕ отдаём никогда: в таблице он не нужен, а утечь
         # может. Опознать себя человек может по метке `me`.
-        'name': (u.get('name') or '').strip()[:40] or 'Ученик',
-        'points': _rating_points(u, now) + bonus,
+        #
+        # Имя видят все участники — брань в нём закрываем. В реестре оно
+        # остаётся как есть: админу в панели нужно видеть, что написано.
+        'name': _mask_profanity((u.get('name') or '').strip()[:40]) or 'Ученик',
+        'points': _rating_points(u, now),
         'streak': int(u.get('streak') or 0),
         'prayers': int(u.get('prayersRead') or 0),
         'me': u.get('phone') == ident,
@@ -982,7 +1007,7 @@ def _rating(data):
     # Пары «запись — строка для показа». Телефон нужен для отбора (скрытые,
     # круг друзей), но в саму строку он не попадает: наружу уходит только
     # имя, очки и серия.
-    pairs = [(u, _rating_row(u, ident, now, users)) for u in users
+    pairs = [(u, _rating_row(u, ident, now)) for u in users
              if u.get('phone') and not u.get('blocked')]
     pairs.sort(key=lambda pr: (-pr[1]['points'], -pr[1]['streak'],
                                pr[1]['name']))
@@ -1001,26 +1026,18 @@ def _rating(data):
                for i, (u, r) in enumerate(
                    [pr for pr in pairs if pr[0].get('phone') in circle])]
 
-    bonus, invited_good = _ref_bonus(ident, users, now)
-    invited_all = sum(1 for u in users if u.get('invitedBy') == ident)
+    invited = sum(1 for u in users if u.get('invitedBy') == ident)
     return 200, {
         'top': top,
         'me': {'rank': my_rank, 'points': my_points,
                'total': len(pairs), 'hidden': bool(me.get('hideInRating'))},
         'friends': friends,
-        'referral': {
-            'code': code,
-            'invited': invited_all,
-            'counted': invited_good,
-            'bonus': bonus,
-            'perFriend': _REF_BONUS,
-            'minPrayers': _REF_MIN_PRAYERS,
-        },
+        'referral': {'code': code, 'invited': invited},
     }
 
 
 def _apply_referral(data):
-    """Ученик вводит код пригласившего. Один раз и только до первых очков."""
+    """Ученик вводит код пригласившего — один раз. Даёт только круг друзей."""
     ident = _student_by_key(data)
     if ident is None:
         return 403, {'error': 'forbidden'}
@@ -1041,14 +1058,15 @@ def _apply_referral(data):
             return 404, {'error': 'unknown code'}
         if host.get('phone') == ident:
             return 409, {'error': 'self'}
-        # Взаимные приглашения запрещаем: иначе двое разом получают бонус
-        # друг за друга, ничего не приведя.
+        # Взаимное приглашение ничего не добавляет: эти двое уже в одном
+        # круге. Отбиваем, чтобы человек не гадал, сработал ли код.
         if host.get('invitedBy') == ident:
             return 409, {'error': 'mutual'}
         me['invitedBy'] = host.get('phone')
         me['invitedAt'] = int(time.time() * 1000)
         _save_users(users)
-    return 200, {'ok': True, 'inviter': (host.get('name') or '').strip()[:40]}
+    return 200, {'ok': True,
+                 'inviter': _mask_profanity((host.get('name') or '').strip()[:40])}
 
 
 def _identity(data):

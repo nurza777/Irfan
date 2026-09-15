@@ -8,6 +8,7 @@ import '../services/auth_service.dart';
 import '../services/lang.dart';
 import '../services/date_fmt.dart';
 import '../services/prayer_service.dart';
+import '../services/books_service.dart';
 import '../services/certificate_service.dart';
 import '../services/support_chat_service.dart';
 import '../services/tracker_service.dart';
@@ -541,15 +542,18 @@ void showMoreSheet(
                     open: (c) => Navigator.push(c,
                         MaterialPageRoute(builder: (_) => const NewsScreen())),
                   ),
-                  _MenuTile(
-                    icon: Icons.local_library_outlined,
-                    title: 'Книги',
-                    subtitle: 'Библиотека для чтения',
-                    sheet: ctx,
-                    free: true,
-                    open: (c) => Navigator.push(c,
-                        MaterialPageRoute(builder: (_) => const BooksScreen())),
-                  ),
+                  // Только когда в каталоге есть книги — см. BooksService.hasBooks.
+                  if (BooksService.instance.hasBooks)
+                    _MenuTile(
+                      icon: Icons.local_library_outlined,
+                      title: 'Книги',
+                      subtitle: 'Библиотека для чтения',
+                      sheet: ctx,
+                      free: true,
+                      open: (c) => Navigator.push(c,
+                          MaterialPageRoute(
+                              builder: (_) => const BooksScreen())),
+                    ),
                   _MenuTile(
                     icon: Icons.explore_outlined,
                     title: 'Кибла',

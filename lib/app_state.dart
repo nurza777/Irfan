@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/access_service.dart';
+import 'services/books_service.dart';
 import 'services/certificate_service.dart';
 import 'services/account_backup.dart';
 import 'services/account_deletion.dart';
@@ -127,9 +129,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // сервер продолжал бы слать на мёртвый адрес.
     if (settings?.liveNotificationsEnabled == true) {
       unawaited(PushService.enable());
+    } else {
+      // Уведомления уже разрешены (например, раньше включали азан), а эфир
+      // человек сам не выключал — включаем его по умолчанию.
+      unawaited(_adoptLiveDefaultIfPermitted());
     }
     // Ответ поддержки мог прийти, пока приложение было закрыто.
     unawaited(SupportChatService.refreshUnread(auth?.current?.phone));
+    // Есть ли книги — от этого зависит, показывать ли пункт «Книги» в меню.
+    unawaited(BooksService.instance.refreshAvailability());
     _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
       final prev = now;
       now = DateTime.now();
@@ -221,6 +229,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
         return false;
       }
+      await _adoptLiveDefault(granted);
     }
     await settings!.setNotificationsEnabled(value);
     _rescheduleNotifications();
@@ -235,7 +244,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (value) {
       final granted = await NotificationService.requestPermission();
       if (!granted) {
-        await settings!.setLiveNotificationsEnabled(false);
+        // «Выключено» НЕ записываем: это не решение человека, а отказ
+        // системы. Разрешит позже в настройках телефона — эфир включится
+        // сам (см. _adoptLiveDefaultIfPermitted), как он и хотел.
         notifyListeners();
         return false;
       }
@@ -244,6 +255,25 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await settings!.setLiveNotificationsEnabled(value);
     notifyListeners();
     return value;
+  }
+
+  /// Уведомления разрешили — включаем эфир, если человек его сам не трогал.
+  Future<void> _adoptLiveDefault(bool granted) async {
+    final s = settings;
+    if (s == null) return;
+    // Пуши об эфире сейчас приходят только на iOS (на Android нужен FCM).
+    if (await s.adoptLiveDefault(granted: granted, supported: Platform.isIOS)) {
+      unawaited(PushService.enable());
+      notifyListeners();
+    }
+  }
+
+  /// То же при запуске и возврате в приложение: без окна с вопросом, только
+  /// по уже выданному разрешению.
+  Future<void> _adoptLiveDefaultIfPermitted() async {
+    final s = settings;
+    if (s == null || s.liveNotificationsChosen || !Platform.isIOS) return;
+    await _adoptLiveDefault(await NotificationService.hasPermission());
   }
 
   /// Спрашивать ли после намаза «прочитали?». Разрешение то же, что у азана.
@@ -255,6 +285,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
         return false;
       }
+      await _adoptLiveDefault(granted);
     }
     await settings!.setAskEnabled(value);
     _rescheduleNotifications();
@@ -578,6 +609,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // разумеется, не делает и считает, что доступ не выдали.
     unawaited(_reportActivity());
     unawaited(SupportChatService.refreshUnread(auth?.current?.phone));
+    // Уведомления могли разрешить в настройках телефона, пока нас не было.
+    unawaited(_adoptLiveDefaultIfPermitted());
   }
 
   /// Перезапрашивает профиль и доступы у сервера.

@@ -161,8 +161,9 @@ The app relies on very few external services.
    video platform is involved.
 
 2. Apple Push Notification service (APNs) — used only to tell students that
-   a live broadcast has started. Optional, off by default, switched on by
-   the user in Settings.
+   a live broadcast has started. It is turned on together with notification
+   permission, only after the user allows notifications in the system
+   prompt, and can be switched off at any time in Settings.
 
 3. https://cdn.islamic.network — public CDN that streams Quran recitation
    audio. Nothing is bundled in the app; audio is fetched on demand when the

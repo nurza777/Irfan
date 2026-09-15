@@ -201,6 +201,24 @@ class NotificationService {
     return ok ?? true;
   }
 
+  /// Разрешены ли уведомления — БЕЗ системного окна с вопросом.
+  ///
+  /// Нужно при запуске и при возврате в приложение: человек мог разрешить
+  /// уведомления в настройках телефона, и тогда пора включить эфир по
+  /// умолчанию. Спрашивать его при этом нельзя — окно при каждом запуске
+  /// было бы навязчиво, а Apple считает такое поводом для отказа.
+  static Future<bool> hasPermission() async {
+    await init();
+    final ios = _plugin.resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin>();
+    if (ios != null) {
+      return (await ios.checkPermissions())?.isEnabled ?? false;
+    }
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    return await android?.areNotificationsEnabled() ?? false;
+  }
+
   /// Сколько уведомлений разрешаем себе запланировать разом.
   ///
   /// iOS хранит не больше 64 отложенных уведомлений на приложение и молча

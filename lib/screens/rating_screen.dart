@@ -17,7 +17,7 @@ import '../widgets/glass.dart';
 /// — рядом с общей сотней есть круг друзей, где место видно и новичку:
 ///   в таблице из тысячи человек сто первый не увидит себя никогда, а среди
 ///   пятерых знакомых соревнование настоящее;
-/// — приглашение даёт очки не сразу, а когда позванный сам начнёт читать.
+/// — код приглашения складывает этот круг; очков за приглашения нет.
 class RatingScreen extends StatefulWidget {
   const RatingScreen({super.key});
 
@@ -273,7 +273,13 @@ class _RatingScreenState extends State<RatingScreen>
                                   SnackBar(content: Text(t('Код скопирован'))));
                             },
                       icon: const Icon(Icons.copy, size: 18),
-                      label: Text(t('Скопировать')),
+                      // Две кнопки делят строку пополам, и на узком
+                      // экране «Скопировать» не влезало: «ь» уезжала на
+                      // вторую строку. Подпись ужимается, а не переносится.
+                      label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(t('Скопировать'),
+                              maxLines: 1, softWrap: false)),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -288,7 +294,10 @@ class _RatingScreenState extends State<RatingScreen>
                                     ref.code,
                               )),
                       icon: const Icon(Icons.share, size: 18),
-                      label: Text(t('Поделиться')),
+                      label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(t('Поделиться'),
+                              maxLines: 1, softWrap: false)),
                     ),
                   ),
                 ],
@@ -306,19 +315,12 @@ class _RatingScreenState extends State<RatingScreen>
               Text('${t('Пришло по коду')}: ${ref.invited}',
                   style: const TextStyle(
                       fontSize: 15, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 6),
-              Text('${t('Зачтено')}: ${ref.counted} · '
-                  '${t('начислено')} ${ref.bonus} ${t('очков')}',
-                  style: TextStyle(
-                      fontSize: 13.5,
-                      color: Colors.white.withValues(alpha: 0.75))),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Text(
-                // Условие пишем прямо, а не мелким шрифтом внизу: человек
-                // должен понимать, почему друг пришёл, а очков нет.
-                '${t('Очки приходят не за регистрацию, а когда друг прочитает')} '
-                '${ref.minPrayers} ${t('намазов')} — '
-                '${ref.perFriend} ${t('очков за каждого')}.',
+                // Зачем звать, если очков за это нет, — пишем прямо: иначе
+                // человек ищет, где начислен бонус, и решает, что сломалось.
+                t('Кто введёт ваш код, появится у вас во вкладке «Друзья» — '
+                    'соревноваться со знакомыми интереснее.'),
                 style: TextStyle(
                     fontSize: 12.5,
                     height: 1.35,
