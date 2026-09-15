@@ -102,6 +102,7 @@ PY
 suite "$TESTS/test_staff_auth.py"  "Учётки и токены устаза"
 suite "$TESTS/test_student_key.py" "Ключ устройства ученика"
 suite "$TESTS/test_support_chat.py" "Чат с поддержкой"
+suite "$TESTS/test_push.py" "Пуши: токены iOS/Android и FCM"
 suite "$TESTS/test_rating.py" "Соревнование и приглашения"
 suite "$TESTS/test_names_filter.py" "Брань в именах: таблица и чат"
 suite "$TESTS/test_limits.py"      "Потолки размера и подделка адреса"
