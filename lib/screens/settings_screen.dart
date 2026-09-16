@@ -266,7 +266,7 @@ class SettingsScreen extends StatelessWidget {
                             color: AppColors.gold),
                         title: Text(t('О приложении')),
                         subtitle: Text(
-                            t('Ирфан 1.0.0 — время намаза, трекер, Коран, зикры'),
+                            t('Ирфан 1.0.1 — время намаза, трекер, Коран, зикры'),
                             style: TextStyle(
                                 fontSize: 13,
                                 color: Colors.white
