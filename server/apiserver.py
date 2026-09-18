@@ -56,6 +56,9 @@ STAFF_FILE = os.environ.get('IRFAN_STAFF_FILE', '/etc/irfan/staff.json')
 STREAM_FILE = os.environ.get('IRFAN_STREAM_FILE', '/etc/irfan/stream.json')
 # Секрет подписи ссылок на уроки и выключатель проверки.
 MEDIA_CFG = os.environ.get('IRFAN_MEDIA_CFG', '/etc/irfan/media.json')
+# Метка обратного прокси: по ней сервер отличает запросы, пришедшие через
+# nginx, от любых других локальных (см. _ip и _front_ok).
+FRONT_CFG = os.environ.get('IRFAN_FRONT_CFG', '/etc/irfan/front.json')
 COMMENTS = os.path.join(ROOT, 'comments.json')
 USERS = os.path.join(ROOT, 'users.json')
 REDEMPTIONS = os.path.join(ROOT, 'redemptions.json')
@@ -236,6 +239,27 @@ RATE_SUPPORT = 300
 
 _hits = {}              # (ключ, ip) -> [метки времени]
 _rate_lock = threading.Lock()
+
+# Секрет обратного прокси читается один раз: файл меняется только руками,
+# а обращение к диску на каждый запрос обошлось бы дороже пользы.
+_front_secret = None
+
+
+def _front_ok(headers):
+    """Пришёл ли запрос через nginx (а не мимо него, прямо в порт).
+
+    Без файла с секретом проверка выключена: так ведут себя локальные
+    прогоны и тесты, где прокси нет вовсе. На бою файл есть, и тогда
+    заголовкам с адресом клиента верим только с этой меткой.
+    """
+    global _front_secret
+    if _front_secret is None:
+        cfg = _read_json(FRONT_CFG, {})
+        _front_secret = (cfg.get('secret') or '') if isinstance(cfg, dict) else ''
+    if not _front_secret:
+        return True
+    got = (headers.get('X-Irfan-Front') or '').strip()
+    return hmac.compare_digest(got, _front_secret)
 
 
 def _rate_ok(key, ip, limit):
@@ -3058,9 +3082,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         пароля перестал бы ловиться, а чужой спам блокировал бы всех
         сразу. Заголовку доверяем только от самого прокси — иначе его
         подделает кто угодно и обойдёт ограничения.
+
+        «Пришло с localhost» само по себе НЕ доказывает, что это nginx:
+        любой локальный проброс (например, Tailscale Funnel, который ходил
+        прямо в 8090) приносит запросы тоже с localhost, и тогда клиент
+        сам себе назначал адрес заголовком. Поэтому прокси помечает свои
+        запросы секретом из /etc/irfan/front.json — его знает только он.
         """
         peer = self.client_address[0]
         if peer not in ('127.0.0.1', '::1'):
+            return peer
+        if not _front_ok(self.headers):
+            # Запрос с localhost без метки прокси: заголовкам не верим,
+            # считаем такие обращения одним счётчиком.
             return peer
         # X-Real-IP прокси ставит сам, затирая присланное клиентом, — ему
         # верить можно.

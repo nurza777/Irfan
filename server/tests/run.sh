@@ -56,6 +56,7 @@ suite() {
     IRFAN_STAFF_FILE="$dir/staff.json" \
     IRFAN_STREAM_FILE="$dir/stream.json" \
     IRFAN_MEDIA_CFG="$dir/media.json" \
+    IRFAN_FRONT_CFG="$dir/front.json" \
     IRFAN_MEDIA_BASE="http://127.0.0.1:$port" \
     python3 apiserver.py > "$dir/server.log" 2>&1
   ) &
@@ -102,10 +103,20 @@ PY
 suite "$TESTS/test_staff_auth.py"  "Учётки и токены устаза"
 suite "$TESTS/test_student_key.py" "Ключ устройства ученика"
 suite "$TESTS/test_support_chat.py" "Чат с поддержкой"
+# Подписи на уроки ВКЛЮЧЕНЫ: смысл в том, что фото новости открыто всем
+# даже в этом режиме — новости читают до регистрации.
+suite "$TESTS/test_news_media.py" "Новость с фото: от устаза до ленты" '
+printf "{\"require_signed\": true, \"secret\": \"test-media-secret-0123456789\"}" > media.json
+'
 suite "$TESTS/test_push.py" "Пуши: токены iOS/Android и FCM"
 suite "$TESTS/test_rating.py" "Соревнование и приглашения"
 suite "$TESTS/test_names_filter.py" "Брань в именах: таблица и чат"
 suite "$TESTS/test_limits.py"      "Потолки размера и подделка адреса"
+# Метка прокси проверяется отдельным набором: остальным наборам файла
+# front.json не дают, и они гоняются так же, как раньше — без прокси.
+suite "$TESTS/test_front_trust.py" "Доверие заголовкам только от nginx" '
+printf "{\"secret\": \"test-front-secret\"}" > front.json
+'
 suite "$TESTS/test_crashes.py"     "Приём сбоев приложения"
 suite "$TESTS/test_restore.py"     "Перенос аккаунта на другой телефон"
 suite "$TESTS/test_certificates.py" "Сертификаты и дипломы"
