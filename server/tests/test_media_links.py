@@ -92,6 +92,14 @@ check('просроченная ссылка — отказ', c == 403, c)
 c, _ = call('GET', '/uploads/urok.mp4', None, ADMIN)
 check('панель смотрит напрямую', c == 200, c)
 
+print('== вложения новостей открыты всем ==')
+# Новости читают и до регистрации: подпись просить не у кого.
+c, _ = call('GET', '/uploads/novost.jpg')
+check('фото новости отдаётся без подписи', c == 200, c)
+
+c, _ = call('GET', '/uploads/urok.mp4')
+check('урок рядом по-прежнему закрыт', c == 403, c)
+
 print('== сортировка не пострадала ==')
 c, b = call('GET', '/media.json', None, ADMIN)
 items = {m['name']: m for m in (b.get('items') or [])} if isinstance(b, dict) else {}

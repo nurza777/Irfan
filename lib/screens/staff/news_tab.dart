@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../services/staff_api.dart';
@@ -62,52 +65,21 @@ class _NewsTabState extends State<NewsTab> {
   Future<void> _edit([NewsPost? post]) async {
     final titleCtrl = TextEditingController(text: post?.title ?? '');
     final bodyCtrl = TextEditingController(text: post?.body ?? '');
+    // Копия вложений: пока форму не сохранили, правки не должны попадать
+    // в новость — иначе отмена всё равно оставила бы добавленное фото.
+    final media = List<NewsMedia>.from(post?.media ?? const <NewsMedia>[]);
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppColors.skyBottom,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 18,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(post == null ? 'Новая новость' : 'Редактировать',
-                style: const TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 14),
-            TextField(
-              controller: titleCtrl,
-              autofocus: true,
-              style: const TextStyle(fontSize: 15),
-              decoration: _dec('Заголовок'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: bodyCtrl,
-              maxLines: 5,
-              style: const TextStyle(fontSize: 15),
-              decoration: _dec('Текст новости'),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.accentGreen,
-                    padding: const EdgeInsets.symmetric(vertical: 14)),
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Сохранить'),
-              ),
-            ),
-          ],
-        ),
+      builder: (ctx) => _NewsForm(
+        isNew: post == null,
+        titleCtrl: titleCtrl,
+        bodyCtrl: bodyCtrl,
+        media: media,
+        dec: _dec,
       ),
     );
     // Значения снимаем сразу, а поля освобождаем: контроллер живёт до конца
@@ -119,14 +91,20 @@ class _NewsTabState extends State<NewsTab> {
 
     // Экран могли закрыть, пока форма была открыта.
     if (!mounted || saved != true) return;
-    if (title.isEmpty && body.isEmpty) return;
+    if (title.isEmpty && body.isEmpty && media.isEmpty) return;
     setState(() {
       if (post == null) {
         _items.insert(
-            0, NewsPost(title: title, body: body, date: DateTime.now()));
+            0,
+            NewsPost(
+                title: title,
+                body: body,
+                date: DateTime.now(),
+                media: media));
       } else {
         post.title = title;
         post.body = body;
+        post.media = media;
       }
       _dirty = true;
     });
@@ -303,6 +281,21 @@ class _NewsTabState extends State<NewsTab> {
                             height: 1.4,
                             color: Colors.white.withValues(alpha: 0.8))),
                   ],
+                  if (post.media.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        for (final m in post.media)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Icon(
+                                m.isVideo ? Icons.videocam : Icons.photo,
+                                size: 16,
+                                color: AppColors.goldLight),
+                          ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -324,6 +317,209 @@ class _NewsTabState extends State<NewsTab> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Форма новости: заголовок, текст и вложения.
+///
+/// Вынесена в отдельный виджет, потому что загрузка файла идёт прямо из
+/// формы: список вложений и полоса «идёт загрузка» должны перерисовываться,
+/// пока лист открыт, а сам лист живёт вне состояния вкладки.
+class _NewsForm extends StatefulWidget {
+  final bool isNew;
+  final TextEditingController titleCtrl;
+  final TextEditingController bodyCtrl;
+
+  /// Список правится на месте: вкладка читает его после закрытия формы.
+  final List<NewsMedia> media;
+  final InputDecoration Function(String) dec;
+
+  const _NewsForm({
+    required this.isNew,
+    required this.titleCtrl,
+    required this.bodyCtrl,
+    required this.media,
+    required this.dec,
+  });
+
+  @override
+  State<_NewsForm> createState() => _NewsFormState();
+}
+
+class _NewsFormState extends State<_NewsForm> {
+  /// Потолок для ролика. Новости смотрят с телефона и часто по мобильному
+  /// интернету: файл тяжелее уже не объявление, а урок — его место в курсе.
+  static const _maxVideoBytes = 100 * 1024 * 1024;
+
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _attach({required bool video}) async {
+    final picker = ImagePicker();
+    final picked = video
+        ? await picker.pickVideo(
+            source: ImageSource.gallery,
+            maxDuration: const Duration(minutes: 3))
+        // Снимок с телефона — это десятки мегабайт, а в ленте картинка
+        // показывается шириной в экран: ужимаем при выборе.
+        : await picker.pickImage(
+            source: ImageSource.gallery,
+            maxWidth: 1600,
+            maxHeight: 1600,
+            imageQuality: 85);
+    if (picked == null) return;
+
+    final file = File(picked.path);
+    if (video && await file.length() > _maxVideoBytes) {
+      if (!mounted) return;
+      setState(() => _error =
+          'Видео больше 100 МБ — обрежьте ролик или выложите его уроком');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final (url, err) = await const StaffApi().uploadMedia(file,
+        contentType: video ? 'video/mp4' : 'image/jpeg');
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (err != null) {
+        _error = err;
+      } else if (url != null) {
+        widget.media
+            .add(NewsMedia(type: video ? 'video' : 'image', url: url));
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 18,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 20),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.isNew ? 'Новая новость' : 'Редактировать',
+                style: const TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 14),
+            TextField(
+              controller: widget.titleCtrl,
+              autofocus: true,
+              style: const TextStyle(fontSize: 15),
+              decoration: widget.dec('Заголовок'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: widget.bodyCtrl,
+              maxLines: 5,
+              style: const TextStyle(fontSize: 15),
+              decoration: widget.dec('Текст новости'),
+            ),
+            const SizedBox(height: 14),
+            for (final m in widget.media) _attachmentRow(m),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: _attachStyle,
+                    onPressed: _busy ? null : () => _attach(video: false),
+                    icon: const Icon(Icons.photo_outlined, size: 18),
+                    label: const Text('Фото'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: _attachStyle,
+                    onPressed: _busy ? null : () => _attach(video: true),
+                    icon: const Icon(Icons.videocam_outlined, size: 18),
+                    label: const Text('Видео'),
+                  ),
+                ),
+              ],
+            ),
+            if (_busy) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.gold)),
+                  const SizedBox(width: 10),
+                  Text('Файл загружается…',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.7))),
+                ],
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!,
+                  style: TextStyle(fontSize: 13, color: Colors.red.shade300)),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.accentGreen,
+                    padding: const EdgeInsets.symmetric(vertical: 14)),
+                // Пока файл грузится, закрывать форму нельзя: ссылка
+                // придёт уже некуда, и вложение потерялось бы.
+                onPressed:
+                    _busy ? null : () => Navigator.pop(context, true),
+                child: const Text('Сохранить'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  ButtonStyle get _attachStyle => OutlinedButton.styleFrom(
+        foregroundColor: Colors.white,
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      );
+
+  Widget _attachmentRow(NewsMedia m) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Icon(m.isVideo ? Icons.videocam : Icons.photo,
+              size: 18, color: AppColors.goldLight),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(m.isVideo ? 'Видео' : 'Фото',
+                style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.white.withValues(alpha: 0.85))),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            onPressed: () => setState(() => widget.media.remove(m)),
+            icon: Icon(Icons.close, size: 18, color: Colors.red.shade300),
+          ),
+        ],
       ),
     );
   }

@@ -884,6 +884,28 @@ def _book_files():
     return names
 
 
+def _news_files():
+    """Имена фото и видео, на которые ссылается лента новостей.
+
+    Как и книги, новости открыты всем — их читают и до регистрации. Поэтому
+    вложения новости раздаются без подписи: иначе при включении
+    `require_signed` лента молча осталась бы без картинок у гостей, которым
+    подпись просить нечем.
+    """
+    cat = _read_json(os.path.join(ROOT, 'news.json'), {})
+    names = set()
+    for n in (cat.get('items') or []) if isinstance(cat, dict) else []:
+        if not isinstance(n, dict):
+            continue
+        for m in (n.get('media') or []):
+            if not isinstance(m, dict):
+                continue
+            v = safe_upload_name(str(m.get('url') or '').rsplit('/', 1)[-1])
+            if v:
+                names.add(v)
+    return names
+
+
 # ——— Соревнование и приглашения ———
 #
 # Очки НЕ равны кошельку. Кошелёк зажат потолком в MAX_COINS (1000) — это
@@ -3139,7 +3161,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p.startswith('/uploads/') and _media_cfg().get('require_signed'):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             name = p[len('/uploads/'):]
-            if name not in _book_files() \
+            if name not in _book_files() and name not in _news_files() \
                     and not _media_sig_ok(name, (q.get('exp') or [''])[0],
                                           (q.get('sig') or [''])[0]) \
                     and self._role_checked() not in ('admin', 'ustaz'):

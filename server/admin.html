@@ -1769,7 +1769,12 @@ function viewModeration() {
 
   const blocks = [
     ['news', 'Новости', state.pending.news, 'news.json',
-      (p) => `${(p.items || []).length} новост(ей)`],
+      (p) => {
+        const items = p.items || [];
+        const media = items.reduce((s, n) => s + (n.media || []).length, 0);
+        return `${items.length} новост(ей)` +
+          (media ? `, вложений: ${media}` : '');
+      }],
     ['azkar', 'Азкары', state.pending.azkar, 'azkar.json',
       (p) => `${(p.categories || []).length} категор., ` +
              `${(p.categories || []).reduce((s, c) => s + (c.items || []).length, 0)} зикр(ов)`],
@@ -1784,6 +1789,7 @@ function viewModeration() {
       <h2>${title} ${tag}</h2>
       <p class="muted">Автор: ${esc(p.author || '—')} · ${fmtDateTime(Date.parse(p.submittedAt) || 0)}</p>
       <p>${esc(summary(p))}</p>
+      ${id === 'news' ? newsPreview(p) : ''}
       ${p.reason ? `<p class="muted">Причина отказа: ${esc(p.reason)}</p>` : ''}
       ${st === 'pending' ? `<div class="row-actions" style="margin-top:10px">
         <button class="primary" data-approve="${id}">Одобрить и опубликовать</button>
@@ -1791,6 +1797,34 @@ function viewModeration() {
       </div>` : ''}
     </div>`;
   }).join('');
+}
+
+/// Предпросмотр заявки на новости: текст и вложения.
+///
+/// Одобрение публикует новость ученикам сразу, поэтому фото и видео админ
+/// должен увидеть ДО нажатия кнопки, а не в приложении после. Видео
+/// подгружается только по нажатию (preload="none"): в заявке их может быть
+/// несколько, и панель иначе тянула бы сотни мегабайт при открытии.
+function newsPreview(p) {
+  const items = p.items || [];
+  if (!items.length) return '';
+  return `<div style="margin-top:10px">` + items.map((n) => {
+    const media = (n.media || []).map((m) => {
+      const url = String(m.url || '');
+      if (!/^https?:\/\//.test(url)) return '';
+      return m.type === 'video'
+        ? `<video src="${esc(url)}" controls preload="none"
+             style="max-width:240px;max-height:180px;border-radius:8px"></video>`
+        : `<a href="${esc(url)}" target="_blank" rel="noopener">
+             <img src="${esc(url)}" alt=""
+               style="max-width:240px;max-height:180px;border-radius:8px"></a>`;
+    }).join(' ');
+    return `<div style="margin-bottom:10px">
+      <div><b>${esc(n.title || '(без заголовка)')}</b></div>
+      ${n.body ? `<div class="muted">${esc(n.body)}</div>` : ''}
+      ${media ? `<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">${media}</div>` : ''}
+    </div>`;
+  }).join('') + `</div>`;
 }
 
 /// Карточка одной заявки. [who] — id устаза, если заявка на каталог.

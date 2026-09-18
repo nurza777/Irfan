@@ -6,6 +6,7 @@ import '../services/date_fmt.dart';
 import '../theme.dart';
 import '../widgets/dome_background.dart';
 import '../widgets/glass.dart';
+import 'news_media_screen.dart';
 
 /// Новости от устаза.
 class NewsScreen extends StatefulWidget {
@@ -240,9 +241,79 @@ class _NewsCard extends StatelessWidget {
                         height: 1.5,
                         color: Colors.white.withValues(alpha: 0.85))),
               ],
+              for (final m in item.media) ...[
+                const SizedBox(height: 12),
+                _Attachment(media: m, title: item.title),
+              ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Фото или видео в карточке новости. По нажатию открывается во весь экран.
+///
+/// Видео в ленте не проигрывается и даже не загружается: роликов в ленте
+/// может быть несколько, и каждый плеер тянул бы файл ради одного кадра.
+/// Вместо кадра — тёмная плашка со значком, сам ролик открывается нажатием.
+class _Attachment extends StatelessWidget {
+  final NewsAttachment media;
+  final String title;
+  const _Attachment({required this.media, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => NewsMediaScreen(media: media, title: title)),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: media.isVideo
+            ? Container(
+                height: 170,
+                width: double.infinity,
+                color: Colors.black.withValues(alpha: 0.45),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.play_circle_outline,
+                        size: 46, color: AppColors.goldLight),
+                    const SizedBox(height: 8),
+                    Text(t('Смотреть видео'),
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.white.withValues(alpha: 0.8))),
+                  ],
+                ),
+              )
+            : Image.network(
+                media.url,
+                height: 200,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                // Пока фото не пришло, карточка не должна прыгать: держим
+                // ту же высоту, что и у готовой картинки.
+                loadingBuilder: (context, child, progress) => progress == null
+                    ? child
+                    : Container(
+                        height: 200,
+                        color: Colors.black.withValues(alpha: 0.3),
+                        child: const Center(
+                            child: CircularProgressIndicator(
+                                color: AppColors.gold)),
+                      ),
+                errorBuilder: (_, __, ___) => Container(
+                  height: 200,
+                  color: Colors.black.withValues(alpha: 0.3),
+                  child: Icon(Icons.image_not_supported_outlined,
+                      color: Colors.white.withValues(alpha: 0.5)),
+                ),
+              ),
       ),
     );
   }

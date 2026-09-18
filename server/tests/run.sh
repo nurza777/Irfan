@@ -124,6 +124,8 @@ printf "{\"require_signed\": true, \"secret\": \"test-media-secret-0123456789\"}
 printf "video" > api/uploads/urok.mp4
 printf "{\"folders\":[{\"id\":\"f1\",\"name\":\"Таджвид\"}],\"files\":{\"urok.mp4\":\"f1\"},\"titles\":{\"urok.mp4\":\"Первый урок\"}}" > media-folders.json
 printf "{\"updated\":\"x\",\"teachers\":[{\"id\":\"t1\",\"name\":\"Устаз\",\"directions\":[{\"title\":\"Направление\",\"courses\":[{\"title\":\"Курс\",\"lessons\":[{\"title\":\"Урок 1\",\"url\":\"http://127.0.0.1/uploads/urok.mp4\"}]}]}]}]}" > api/courses.json
+printf "jpeg" > api/uploads/novost.jpg
+printf "{\"items\":[{\"title\":\"Объявление\",\"body\":\"\",\"date\":\"2026-09-18T10:00:00.000\",\"media\":[{\"type\":\"image\",\"url\":\"http://127.0.0.1/uploads/novost.jpg\"}]}]}" > api/news.json
 '
 
 echo "════════════════════════════════════════"

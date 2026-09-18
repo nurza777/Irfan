@@ -62,23 +62,59 @@ class Lesson {
       );
 }
 
+/// Фото или видео, прикреплённое к новости.
+///
+/// Тип хранится строкой рядом со ссылкой, а не вычисляется по расширению:
+/// сервер вправе переименовать файл при загрузке, а лента должна знать, что
+/// рисовать, ещё до того, как файл скачан.
+class NewsMedia {
+  /// `image` или `video`.
+  final String type;
+  final String url;
+  const NewsMedia({required this.type, required this.url});
+
+  bool get isVideo => type == 'video';
+
+  Map<String, dynamic> toJson() => {'type': type, 'url': url};
+
+  factory NewsMedia.fromJson(Map<String, dynamic> j) => NewsMedia(
+        type: (j['type'] as String?) == 'video' ? 'video' : 'image',
+        url: (j['url'] as String?)?.trim() ?? '',
+      );
+}
+
 /// Новость/объявление для учеников.
 class NewsPost {
   String title;
   String body;
   DateTime date;
-  NewsPost({required this.title, required this.body, required this.date});
+
+  /// Вложения в порядке добавления. Пустой список — обычная текстовая новость.
+  List<NewsMedia> media;
+
+  NewsPost({
+    required this.title,
+    required this.body,
+    required this.date,
+    List<NewsMedia>? media,
+  }) : media = media ?? [];
 
   Map<String, dynamic> toJson() => {
         'title': title,
         'body': body,
         'date': date.toIso8601String(),
+        // Пустое поле не пишем: старые новости в news.json остаются как были.
+        if (media.isNotEmpty) 'media': media.map((m) => m.toJson()).toList(),
       };
 
   factory NewsPost.fromJson(Map<String, dynamic> j) => NewsPost(
         title: j['title'] as String? ?? '',
         body: j['body'] as String? ?? '',
         date: DateTime.tryParse(j['date'] as String? ?? '') ?? DateTime.now(),
+        media: ((j['media'] as List?) ?? [])
+            .map((e) => NewsMedia.fromJson(Map<String, dynamic>.from(e)))
+            .where((m) => m.url.isNotEmpty)
+            .toList(),
       );
 }
 
@@ -425,7 +461,14 @@ class StaffApi {
   }
 
   /// Загружает видеофайл урока. Возвращает (ссылка, null) или (null, ошибка).
-  Future<(String?, String?)> uploadVideo(File file) async {
+  Future<(String?, String?)> uploadVideo(File file) => uploadMedia(file);
+
+  /// Загружает файл в `uploads/`: видеоурок, фото или видео к новости.
+  ///
+  /// Тип содержимого сервер по заголовку не проверяет — он смотрит на
+  /// расширение, — но заголовок нужен для nginx и для будущей раздачи.
+  Future<(String?, String?)> uploadMedia(File file,
+      {String contentType = 'video/mp4'}) async {
     if (_auth.isEmpty) return (null, 'Вы не вошли в кабинет устаза');
     try {
       final base = await _base;
@@ -434,7 +477,7 @@ class StaffApi {
       final name = '${DateTime.now().millisecondsSinceEpoch}_$safe';
       final req = http.StreamedRequest(
           'PUT', Uri.parse('$base/uploads/$name'))
-        ..headers.addAll({..._auth, 'Content-Type': 'video/mp4'})
+        ..headers.addAll({..._auth, 'Content-Type': contentType})
         ..contentLength = await file.length();
       // Файл урока — сотни мегабайт. Сначала запускаем отправку, и только
       // потом подаём в неё файл через addStream: он держит обратное давление
